@@ -1,6 +1,6 @@
 
 
-import os, sys, json, time, math, glob, random, threading, webbrowser
+import os, sys, json, time, math, glob, random, threading, webbrowser, zipfile
 import urllib.parse
 import numpy as np
 
@@ -8,6 +8,18 @@ import numpy as np
 SERIAL_PORT = os.environ.get("STRESS_PORT", "/dev/cu.usbmodem11301")  # `ls /dev/cu.*` on macOS to find it
 BAUD        = int(os.environ.get("STRESS_BAUD", "115200"))          # must match Serial.begin() in the .ino
 MUSIC_DIR   = os.environ.get("STRESS_MUSIC", os.path.join(os.path.dirname(os.path.abspath(__file__)), "suno_ai_songs"))  # optional: subfolders calm/ neutral/ elevated/
+
+# Extract suno_ai_songs.zip on first run if the music folder isn't there yet.
+_MUSIC_ZIP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "suno_ai_songs.zip")
+if not os.path.isdir(MUSIC_DIR) and os.path.isfile(_MUSIC_ZIP):
+    if zipfile.is_zipfile(_MUSIC_ZIP):
+        print(f"[music] extracting {os.path.basename(_MUSIC_ZIP)} ...")
+        with zipfile.ZipFile(_MUSIC_ZIP) as _zf:
+            _zf.extractall(os.path.dirname(_MUSIC_ZIP),
+                           members=[m for m in _zf.namelist() if not m.startswith("__MACOSX/")])
+        print(f"[music] extracted to {MUSIC_DIR}")
+    else:
+        print(f"[music] {os.path.basename(_MUSIC_ZIP)} is not a valid zip (Git LFS pointer? run `git lfs pull`)")
 PORT = int(os.environ.get("PORT", "8000"))          # cloud hosts (Render, etc.) inject $PORT automatically
 # Bind all interfaces when a platform PORT is present (so Render can route to it); loopback locally.
 HOST = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
@@ -40,6 +52,16 @@ CHANNELS   = ["bpm", "eda", "hrv", "temp", "motion"]
 #   eda : stress raises skin conductance      -> curr - baseline
 SCORE_SCALES = {"bpm": 40.0, "hrv": 50.0, "temp": 3.0, "eda": 10.0}
 SCORE_INVERTED = {"hrv", "temp"}            # metrics where a DROP below baseline means stress
+
+# ---- population resting norms, used when the user is ALREADY stressed at launch ----
+# A stressed user can't give a valid resting calibration, so instead of averaging the
+# first BASELINE_SEC of data, these literature-typical resting values are frozen in:
+#   bpm  ~70   (normal adult resting HR 60-100)
+#   hrv  ~42ms (healthy-adult resting RMSSD, common range ~20-89 ms)
+#   eda  ~5uS  (typical tonic skin conductance at rest, range 2-16 uS)
+#   temp ~34C  (normal wrist skin temperature 33-36 C)
+NORMAL_BASELINE = {"bpm": 70.0, "hrv": 70.0, "eda": 5.0, "temp": 34.0}
+FIXED_BASELINE  = False                     # set at launch by the "are you stressed?" prompt
 
 # ---- device profiles: each supported input device declares which channels it can deliver ----
 # Channels NOT listed for a device are treated as absent from the start (never "active"), so the
@@ -173,7 +195,11 @@ def sampler_loop():
         with HUB.lock:
             if not HUB.baseline_ready:
                 active = _active_map(now)
-                if any(active.values()) and HUB.base_start is None:
+                if FIXED_BASELINE:
+                    HUB.baseline.update(NORMAL_BASELINE)   # user was stressed at launch: skip calibration
+                    HUB.baseline_ready = True; HUB.calibrating = False
+                    print(f"[baseline] stressed at launch -> using population resting norms: {NORMAL_BASELINE}")
+                elif any(active.values()) and HUB.base_start is None:
                     HUB.base_start = now                       # baseline window opens at first sample
                 if HUB.base_start is not None:
                     for c in CHANNELS:
@@ -1357,6 +1383,16 @@ connect();
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    if sys.stdin.isatty():
+        ans = input("[baseline] Are you feeling stressed right now? [y/N]: ").strip().lower()
+        if ans.startswith("y"):
+            FIXED_BASELINE = True
+            print(f"[baseline] ok — will score against population resting norms {NORMAL_BASELINE}")
+            print( "[baseline] (instead of averaging your first 30 s, which wouldn't be a resting baseline)")
+    if sys.stdin.isatty() and not os.environ.get("STRESS_PORT"):
+        digits = input(f"[serial] digits after /dev/cu.usbmodem (Enter to keep {SERIAL_PORT}): ").strip()
+        if digits:
+            SERIAL_PORT = "/dev/cu.usbmodem" + digits
     threading.Thread(target=serial_loop,  daemon=True).start()
     threading.Thread(target=sampler_loop, daemon=True).start()
     threading.Thread(target=simulate_loop, daemon=True).start()
