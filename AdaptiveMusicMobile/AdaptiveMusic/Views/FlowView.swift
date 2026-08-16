@@ -46,6 +46,7 @@ struct FlowView: View {
             flowButton("Read data from mobile",
                        subtitle: "Camera + flashlight measure your pulse from your fingertip") {
                 hub.inputMode = .camera
+                camera.start()          // permission prompt + flashlight ON the moment they pick it
                 step = .camera
             }
             flowButton("Stream data live from Apple Watch",
@@ -123,6 +124,7 @@ struct FlowView: View {
     private var backButton: some View {
         Button("← Back") {
             camera.stop()
+            watch.endWorkoutSession()      // stop the watch stream so inputs never mix
             step = .input
         }
         .font(.footnote)

@@ -55,8 +55,9 @@ final class WorkoutManager: NSObject, ObservableObject,
 
     func stop() {
         session?.end()
-        builder?.endCollection(withEnd: Date()) { [weak self] _, _ in
-            self?.builder?.finishWorkout { _, _ in }
+        let finishing = builder                       // keep the builder alive through both callbacks
+        finishing?.endCollection(withEnd: Date()) { _, _ in
+            finishing?.finishWorkout { _, _ in }
         }
         session = nil; builder = nil
         DispatchQueue.main.async { self.running = false }

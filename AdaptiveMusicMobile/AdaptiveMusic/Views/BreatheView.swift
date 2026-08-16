@@ -36,7 +36,10 @@ final class BreatheController: ObservableObject {
     func start() {
         active = true
         buffering = true
-        retarget(force: true)
+        blocked = engine.audioSource == .spotify
+        if !blocked {
+            retarget(force: true)     // never touch Spotify playback — blocked mode shows the message
+        }
         timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.tick() }
     }
@@ -66,8 +69,12 @@ final class BreatheController: ObservableObject {
 
     private func tick() {
         guard active else { return }
-        blocked = engine.audioSource == .spotify
-        if blocked { return }
+        let nowBlocked = engine.audioSource == .spotify
+        if nowBlocked { blocked = true; return }
+        if blocked {                                       // user just enabled the AI songs
+            blocked = false
+            retarget(force: true)
+        }
         retarget(force: false)                             // re-calculate as BPM comes down
 
         // --- amplitude-spike beat detection over the engine tap's RMS energy ---

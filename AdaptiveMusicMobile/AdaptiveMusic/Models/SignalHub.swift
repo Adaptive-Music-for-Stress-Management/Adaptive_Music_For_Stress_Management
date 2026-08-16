@@ -103,18 +103,23 @@ final class SignalHub: ObservableObject {
     }
 
     /// One heartbeat, described by its RR interval in milliseconds.
-    func registerBeat(rrMs: Double) {
+    /// skipZeroDiff: the Apple Watch path derives RR from smoothed HealthKit samples,
+    /// where repeated identical readings would fabricate 0 ms "HRV differentials" and
+    /// falsely max out the stress score — those zero diffs are dropped instead.
+    func registerBeat(rrMs: Double, skipZeroDiff: Bool = false) {
         guard (300...2000).contains(rrMs) else { return }        // 30-200 bpm sanity window
         DispatchQueue.main.async { [self] in
             let now = Date()
             bpm = 60000.0 / rrMs
             if let prev = rrPrev {
                 let d = abs(rrMs - prev)
-                hrvDiff = d
-                hrvdEMA = hrvdEMA == nil ? d
-                        : SignalHub.hrvdEmaAlpha * d + (1 - SignalHub.hrvdEmaAlpha) * hrvdEMA!
-                hrvHistory.append(d)
-                if hrvHistory.count > SignalHub.maxPoints { hrvHistory.removeFirst() }
+                if !(skipZeroDiff && d < 0.5) {
+                    hrvDiff = d
+                    hrvdEMA = hrvdEMA == nil ? d
+                            : SignalHub.hrvdEmaAlpha * d + (1 - SignalHub.hrvdEmaAlpha) * hrvdEMA!
+                    hrvHistory.append(d)
+                    if hrvHistory.count > SignalHub.maxPoints { hrvHistory.removeFirst() }
+                }
             }
             rrPrev = rrMs
             lastBeatDate = now
@@ -129,7 +134,7 @@ final class SignalHub: ObservableObject {
     /// A direct BPM sample (Apple Watch HealthKit path) — converted to a pseudo-RR beat.
     func registerBPM(_ value: Double) {
         guard value > 0 else { return }
-        registerBeat(rrMs: 60000.0 / value)
+        registerBeat(rrMs: 60000.0 / value, skipZeroDiff: true)
     }
 
     private func feedBaseline(now: Date) {

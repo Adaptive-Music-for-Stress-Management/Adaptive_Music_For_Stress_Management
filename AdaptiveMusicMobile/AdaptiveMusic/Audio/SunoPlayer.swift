@@ -35,7 +35,6 @@ final class SunoPlayer: NSObject, ObservableObject {
     private var switching = false
     private var playedPerBucket: [Int: Set<String>] = [:]
     private var ticker: AnyCancellable?
-    private var fadeTimers: [Timer] = []
 
     private var activeNode: AVAudioPlayerNode { activeIsA ? nodeA : nodeB }
     private var activeFile: AVAudioFile? { activeIsA ? fileA : fileB }
@@ -74,8 +73,11 @@ final class SunoPlayer: NSObject, ObservableObject {
                 let slot = i / step
                 if slot < 256 { wf[slot] = data[i] }
             }
-            self.currentEnergy = sqrt(sum / Float(n))
-            self.waveform = wf
+            let energy = sqrt(sum / Float(n))
+            DispatchQueue.main.async {                 // render thread must not race main-thread readers
+                self.currentEnergy = energy
+                self.waveform = wf
+            }
         }
     }
 
@@ -137,11 +139,18 @@ final class SunoPlayer: NSObject, ObservableObject {
 
     // MARK: - transport
 
+    /// Start a node only when the engine is actually running — play() on a stopped
+    /// engine raises an uncatchable NSException.
+    private func startNode(_ node: AVAudioPlayerNode) {
+        if !engine.isRunning { try? engine.start() }
+        guard engine.isRunning else { return }
+        node.play()
+    }
+
     func play() {
-        if engine.isRunning == false { try? engine.start() }
         if activeFile == nil { switchSong(to: targetBucket); return }
         playing = true
-        activeNode.play()
+        startNode(activeNode)
         ramp(node: activeNode, to: 1.0, over: 0.7)
     }
 
@@ -168,7 +177,7 @@ final class SunoPlayer: NSObject, ObservableObject {
         node.scheduleSegment(file, startingFrame: startFrame, frameCount: frames, at: nil)
         activeOffset = t
         currentTime = t
-        if playing { node.play() }
+        if playing { startNode(node) }
     }
 
     /// Fade the current song out completely, then fade the next one in (spec: fade out - fade in).
@@ -194,7 +203,7 @@ final class SunoPlayer: NSObject, ObservableObject {
                 self.duration = Double(file.length) / file.processingFormat.sampleRate
                 self.currentTime = 0
                 self.playing = true
-                node.play()
+                self.startNode(node)
                 self.ramp(node: node, to: 1.0, over: 1.1)
                 self.onSongChange?()
             } catch {
@@ -209,8 +218,14 @@ final class SunoPlayer: NSObject, ObservableObject {
         nodeA.stop(); nodeB.stop()
     }
 
+    private var rampTimers: [ObjectIdentifier: Timer] = [:]
+
     private func ramp(node: AVAudioPlayerNode, to target: Float, over seconds: Double,
                       completion: (() -> Void)? = nil) {
+        // one ramp per node: a new ramp cancels the old one INCLUDING its completion,
+        // so a pause-fade superseded by play() can never pause the node afterwards
+        let key = ObjectIdentifier(node)
+        rampTimers[key]?.invalidate()
         guard seconds > 0.01 else { node.volume = target; completion?(); return }
         let steps = 24
         let start = node.volume
@@ -220,8 +235,7 @@ final class SunoPlayer: NSObject, ObservableObject {
             node.volume = start + (target - start) * Float(i) / Float(steps)
             if i >= steps { t.invalidate(); completion?() }
         }
-        fadeTimers.append(timer)
-        fadeTimers.removeAll { !$0.isValid }
+        rampTimers[key] = timer
     }
 }
 

@@ -217,7 +217,11 @@ function claimAudio(src) {
   if (audioSource === src) return;
   audioSource = src;
   if (src === "spotify") sunoFadeStop();
-  else if (spPlayer) { spPlayer.pause().catch(()=>{}); }
+  else if (spPlayer) {
+    spPlayer.pause().catch(()=>{});
+    spIsPlaying = false;
+    const b = $("spPlayBtn"); if (b) b.innerHTML = "&#9654;";
+  }
   breatheSourceCheck();
 }
 
@@ -230,16 +234,17 @@ const SUNO_VOL = 0.9, FADE_MS = 1100;
 sunoEls.forEach(el => { el.volume = 0; });
 
 function fadeEl(el, to, ms) {
+  // interval + wall-clock (not rAF): fades must finish even in a backgrounded tab,
+  // otherwise bucket switches stall while the music tab is hidden
   return new Promise(res => {
-    if (el._fade) cancelAnimationFrame(el._fade);
+    if (el._fade) clearInterval(el._fade);
     const from = el.volume, t0 = performance.now();
-    const step = t => {
-      const k = ms <= 0 ? 1 : Math.min(1, (t - t0) / ms);
+    if (ms <= 0) { el.volume = clamp(to, 0, 1); res(); return; }
+    el._fade = setInterval(() => {
+      const k = Math.min(1, (performance.now() - t0) / ms);
       el.volume = clamp(from + (to - from) * k, 0, 1);
-      if (k < 1) el._fade = requestAnimationFrame(step);
-      else { el._fade = null; res(); }
-    };
-    el._fade = requestAnimationFrame(step);
+      if (k >= 1) { clearInterval(el._fade); el._fade = null; res(); }
+    }, 40);
   });
 }
 async function sunoFadeStop() {
@@ -313,6 +318,9 @@ sunoEls.forEach(el => {
   });
 });
 let sunoDragging = false;
+// safety net: a click that doesn't change the value never fires 'change', which
+// would otherwise leave the drag flag stuck and freeze the timeline display
+window.addEventListener("pointerup", () => setTimeout(() => { sunoDragging = false; spDragging = false; }, 60));
 $("sunoBar").addEventListener("pointerdown", () => sunoDragging = true);
 $("sunoBar").addEventListener("change", () => {
   const el = sunoEls[sunoIdx];
@@ -498,11 +506,18 @@ setInterval(async () => {
   if (!spDragging && dur > 0) $("spBar").value = Math.round(1000 * pos / dur);
   $("spCur").textContent = fmtTime(pos / 1000);
   $("spEnd").textContent = fmtTime(dur / 1000);
+  $("spPlayBtn").innerHTML = st.paused ? "&#9654;" : "&#10074;&#10074;";
   if (karaokeActive) syncLyrics(pos);
-  // track finished -> advance the loop
-  if (st.paused && pos === 0 && spLastPos > dur - 3000 && dur > 0 && spIsPlaying) {
+  // track finished -> advance the loop. spLastPos is the latch: it only holds a
+  // near-the-end value if we actually heard the song play there, and it resets to 0
+  // the moment we fire, so this can't double-trigger. (The SDK's own
+  // player_state_changed clears spIsPlaying before this poll runs, so the latch
+  // must not depend on spIsPlaying.)
+  if (st.paused && pos === 0 && dur > 0 && spLastPos > dur - 3000) {
+    spLastPos = 0;
     spIsPlaying = false;
     spSkip("next");
+    return;
   }
   if (!st.paused) spLastPos = pos;
 }, 300);
@@ -530,7 +545,7 @@ function setRelief(mode) {
   karaokeActive = reliefMode === "karaoke";
   if (reliefMode === "karaoke") enterKaraoke();
   if (reliefMode === "breathe") enterBreathe(); else exitBreathe();
-  if (reliefMode === "play")    enterPlayalong();
+  if (reliefMode === "play")  { enterPlayalong(); setInstrument("piano"); }   // piano is ALWAYS the default
 }
 $("rKaraoke").addEventListener("click", () => setRelief("karaoke"));
 $("rBreathe").addEventListener("click", () => setRelief("breathe"));
@@ -559,8 +574,10 @@ async function fetchKaraoke(current) {
   kShow("karaokeLoading");
   let j = null;
   try {
+    // send the chosen category along: the server session is the source of truth for
+    // mode/value, and a choice made WHILE karaoke is open must reach it too
     const r = await fetch("/api/karaoke", {method:"POST", headers:{"Content-Type":"application/json"},
-                                           body: JSON.stringify({current})});
+                                           body: JSON.stringify({current, mode: spMode, value: spValue})});
     j = await r.json();
   } catch(e){}
   if (!karaokeActive) return;
@@ -642,7 +659,7 @@ function enterBreathe() {
   breatheOn = true;
   ensureAudioGraph();
   breatheSourceCheck();
-  if (audioSource === "spotify") return;
+  if (audioSource === "spotify") return;    // blocked; breatheTick starts the loop once unblocked
   breatheRetarget(true);
   startBeatLoop();
 }
@@ -672,6 +689,11 @@ function breatheTick(s) {
   if (!breatheOn) return;
   breatheSourceCheck();
   if (audioSource !== "suno") return;
+  if (!breatheRAF) {                               // was blocked by Spotify at entry -> start now
+    breatheRetarget(true);
+    startBeatLoop();
+    return;
+  }
   breatheRetarget(false);                          // recalc as the user's BPM comes down
 }
 function breatheOnSongChange() {                   // every song change waits for the next beat

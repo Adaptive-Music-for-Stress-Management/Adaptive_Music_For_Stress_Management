@@ -185,17 +185,23 @@ def push_eeg(tp9, af7, af8, tp10):
 # accepts /PetalStream/eeg, /muse/eeg, etc.  PPG -> heartbeats server-side.
 # ---------------------------------------------------------------------------
 class PPGDetector:
-    """Adaptive-threshold peak detector over the PPG stream -> beat timestamps."""
+    """Adaptive-threshold peak detector over the PPG stream -> beat timestamps.
+    ThreadingOSCUDPServer handles packets on worker threads, so sample() locks."""
     def __init__(self):
         self.dc = None            # slow DC baseline
         self.env = 1.0            # amplitude envelope
         self.prev = 0.0
         self.above = False
         self.last_peak = 0.0
+        self._lock = threading.Lock()
 
     def sample(self, v, ts):
         if not math.isfinite(v):
             return
+        with self._lock:
+            self._sample_locked(v, ts)
+
+    def _sample_locked(self, v, ts):
         self.dc = v if self.dc is None else 0.995 * self.dc + 0.005 * v
         x = v - self.dc
         self.env = max(abs(x), self.env * 0.999, 1e-6)
@@ -215,6 +221,8 @@ def _floats(args):
     return [float(a) for a in args if isinstance(a, (int, float)) and math.isfinite(float(a))]
 
 def _osc_handler(address, *args):
+    if HUB.input != "muse":            # Petal may keep streaming while demo mode is active
+        return
     HUB.osc_last_ts = time.time()
     addr = address.lower()
     vals = _floats(args)
@@ -307,6 +315,7 @@ def start_demo():
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 import uvicorn, asyncio
 import requests as _requests
 
@@ -667,114 +676,147 @@ async def api_personalize(request: Request):
         s["history"] = set(); s["karaoke_tried"] = set()
         s["playlist"] = None
     s["mode"], s["value"] = mode, value or s.get("value", "")
-    tok = _sp_token(s)
 
-    try:
-        if mode == "playlist":
-            if s["playlist"] is None:
-                if not value:
-                    return _with_cookie(JSONResponse({"ok": False, "error": "no_value"}), sid)
-                pl = _load_playlist(s, value)
-                if pl is None:
-                    return _with_cookie(JSONResponse({"ok": False, "error": "playlist_not_found"}), sid)
-                s["playlist"] = pl
-            pl = s["playlist"]
-            if direction == "next":
-                pl["index"] = (pl["index"] + 1) % len(pl["tracks"])
-            elif direction == "prev":
-                pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
-            tr = pl["tracks"][pl["index"]]
-            return _with_cookie(JSONResponse({"ok": True, "track": tr, "mode": mode,
-                                              "playlist": {"name": pl["name"], "index": pl["index"],
-                                                           "count": len(pl["tracks"])}}), sid)
+    # all the network work (Spotify, Claude) is blocking I/O — run it in the
+    # threadpool so the event loop keeps serving the 10 Hz /ws stream
+    def _work():
+        tok = _sp_token(s)
+        try:
+            if mode == "playlist":
+                if s["playlist"] is None:
+                    if not value:
+                        return {"ok": False, "error": "no_value"}
+                    pl = _load_playlist(s, value)
+                    if pl is None:
+                        return {"ok": False, "error": "playlist_not_found"}
+                    s["playlist"] = pl
+                pl = s["playlist"]
+                if direction == "next":
+                    pl["index"] = (pl["index"] + 1) % len(pl["tracks"])
+                elif direction == "prev":
+                    pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
+                tr = pl["tracks"][pl["index"]]
+                return {"ok": True, "track": tr, "mode": mode,
+                        "playlist": {"name": pl["name"], "index": pl["index"],
+                                     "count": len(pl["tracks"])}}
 
-        if mode == "song" and direction == "init":
-            hits = claude_music.search_query(value, limit=1, user_token=tok)
-            if not hits:
-                return _with_cookie(JSONResponse({"ok": False, "error": "not_found"}), sid)
-            tr = hits[0]
-        else:
-            tr = claude_music.resolve_one(mode, value, _current_label(), s["history"],
-                                          api_key=s["key"], model=s["model"], user_token=tok)
-            if not tr:
-                return _with_cookie(JSONResponse({"ok": False, "error": "not_found"}), sid)
-        s["history"].add(_track_key(tr))
-        return _with_cookie(JSONResponse({"ok": True, "track": tr, "mode": mode}), sid)
-    except Exception as e:
-        print("[personalize] failed:", e)
-        return _with_cookie(JSONResponse({"ok": False, "error": str(e)}), sid)
+            if mode == "song" and direction == "init":
+                hits = claude_music.search_query(value, limit=1, user_token=tok)
+                if not hits:
+                    return {"ok": False, "error": "not_found"}
+                tr = hits[0]
+            else:
+                tr = claude_music.resolve_one(mode, value, _current_label(), s["history"],
+                                              api_key=s["key"], model=s["model"], user_token=tok)
+                if not tr:
+                    return {"ok": False, "error": "not_found"}
+            s["history"].add(_track_key(tr))
+            return {"ok": True, "track": tr, "mode": mode}
+        except Exception as e:
+            print("[personalize] failed:", e)
+            return {"ok": False, "error": str(e)}
+
+    payload = await run_in_threadpool(_work)
+    return _with_cookie(JSONResponse(payload), sid)
 
 
 # ---------------- karaoke ----------------
 @app.post("/api/karaoke")
 async def api_karaoke(request: Request):
     """Fetch an instrumental + lyrics package.
-       body: {current: {name, artist, duration_ms} | null}  — uses the session's mode/value."""
+       body: {current: {name, artist, duration_ms} | null, mode?, value?}
+       mode/value (when sent) update the session first — a category chosen WHILE
+       karaoke is open must reach the server too."""
     sid, s = _session(request)
     try:
         body = await request.json()
     except Exception:
         body = {}
+    b_mode = (body.get("mode") or "").strip().lower()
+    b_value = (body.get("value") or "").strip()
+    if b_mode in ("vibe", "artist", "playlist", "song"):
+        if b_mode != s.get("mode") or (b_value and b_value != s.get("value")):
+            s["history"] = set(); s["karaoke_tried"] = set(); s["playlist"] = None
+        s["mode"] = b_mode
+        if b_value:
+            s["value"] = b_value
     if not (s["key"] and s["access"]):
         return _with_cookie(JSONResponse({"ok": False, "error": "not_initialized"}), sid)
     if not s.get("mode"):
         return _with_cookie(JSONResponse({"ok": False, "error": "no_choice"}), sid)
     mode = s["mode"]
-    tok = _sp_token(s)
-    fail = "playlist" if mode == "playlist" else "song"
 
-    try:
-        cur = body.get("current") or None
-        if cur and cur.get("name"):
-            pkg = claude_music.karaoke_package(cur["name"], cur.get("artist", ""),
-                                               cur.get("duration_ms"),
-                                               api_key=s["key"], model=s["model"], user_token=tok)
+    def _work():
+        tok = _sp_token(s)
+        try:
+            cur = body.get("current") or None
+            if cur and cur.get("name"):
+                pkg = claude_music.karaoke_package(cur["name"], cur.get("artist", ""),
+                                                   cur.get("duration_ms"),
+                                                   api_key=s["key"], model=s["model"], user_token=tok)
+                if pkg:
+                    s["karaoke_tried"].add(f"{cur.get('artist','')} — {cur['name']}".lower())
+                    return {"ok": True, **pkg}
+                if mode not in ("vibe", "artist"):
+                    # the spec's message for a failing CURRENT song is the song one, in every mode
+                    return {"ok": False, "error": "song"}
+                # vibe/artist: the current song failed -> find another in-category
+
+            if mode == "playlist":
+                pl = s.get("playlist")
+                if not pl:
+                    pl = _load_playlist(s, s.get("value", ""))
+                    if pl is None:
+                        return {"ok": False, "error": "playlist"}
+                    s["playlist"] = pl
+                order = pl["tracks"][pl["index"]:] + pl["tracks"][:pl["index"]]
+                attempted = False
+                for tr in order[:25]:
+                    key = _track_key(tr)
+                    if key in s["karaoke_tried"]:
+                        continue
+                    attempted = True
+                    s["karaoke_tried"].add(key)
+                    pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
+                                                       api_key=s["key"], model=s["model"], user_token=tok)
+                    if pkg:
+                        pkg["original"] = tr
+                        return {"ok": True, **pkg}
+                if not attempted:                     # whole window already tried -> let a retry start over
+                    s["karaoke_tried"] = set()
+                return {"ok": False, "error": "playlist"}
+
+            if mode == "song":
+                # first request plays the exact favorite song's karaoke; after that the loop
+                # continues with other songs by that artist (like « / » in song mode)
+                exact_key = (s.get("value") or "").strip().lower()
+                if exact_key and ("exact:" + exact_key) not in s["karaoke_tried"]:
+                    s["karaoke_tried"].add("exact:" + exact_key)
+                    hits = claude_music.search_query(s["value"], limit=1, user_token=tok)
+                    if hits:
+                        tr = hits[0]
+                        pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
+                                                           api_key=s["key"], model=s["model"], user_token=tok)
+                        if pkg:
+                            pkg["original"] = tr
+                            s["karaoke_tried"].add(_track_key(tr))
+                            return {"ok": True, **pkg}
+                    return {"ok": False, "error": "song"}
+
+            # vibe / artist / song-loop: keep asking Claude until a song has both halves
+            pkg = claude_music.pick_karaoke_song(mode, s["value"], _current_label(),
+                                                 s["karaoke_tried"],
+                                                 api_key=s["key"], model=s["model"], user_token=tok)
             if pkg:
-                s["karaoke_tried"].add(f"{cur.get('artist','')} — {cur['name']}".lower())
-                return _with_cookie(JSONResponse({"ok": True, **pkg}), sid)
-            if mode not in ("vibe", "artist"):
-                return _with_cookie(JSONResponse({"ok": False, "error": fail}), sid)
-            # vibe/artist: the current song failed -> fall through and find another in-category
+                s["karaoke_tried"].add(_track_key(pkg["original"]))
+                return {"ok": True, **pkg}
+            return {"ok": False, "error": "song"}
+        except Exception as e:
+            print("[karaoke] failed:", e)
+            return {"ok": False, "error": "playlist" if mode == "playlist" else "song"}
 
-        if mode == "playlist":
-            pl = s.get("playlist")
-            if not pl:
-                return _with_cookie(JSONResponse({"ok": False, "error": "no_choice"}), sid)
-            order = pl["tracks"][pl["index"]:] + pl["tracks"][:pl["index"]]
-            for tr in order[:25]:
-                key = _track_key(tr)
-                if key in s["karaoke_tried"]:
-                    continue
-                s["karaoke_tried"].add(key)
-                pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
-                                                   api_key=s["key"], model=s["model"], user_token=tok)
-                if pkg:
-                    pkg["original"] = tr
-                    return _with_cookie(JSONResponse({"ok": True, **pkg}), sid)
-            return _with_cookie(JSONResponse({"ok": False, "error": "playlist"}), sid)
-
-        if mode == "song":
-            hits = claude_music.search_query(s["value"], limit=1, user_token=tok)
-            if hits:
-                tr = hits[0]
-                pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
-                                                   api_key=s["key"], model=s["model"], user_token=tok)
-                if pkg:
-                    pkg["original"] = tr
-                    return _with_cookie(JSONResponse({"ok": True, **pkg}), sid)
-            return _with_cookie(JSONResponse({"ok": False, "error": "song"}), sid)
-
-        # vibe / artist: instrumental + lyrics should always be findable — keep trying songs
-        pkg = claude_music.pick_karaoke_song(mode, s["value"], _current_label(),
-                                             s["karaoke_tried"],
-                                             api_key=s["key"], model=s["model"], user_token=tok)
-        if pkg:
-            s["karaoke_tried"].add(_track_key(pkg["original"]))
-            return _with_cookie(JSONResponse({"ok": True, **pkg}), sid)
-        return _with_cookie(JSONResponse({"ok": False, "error": "song"}), sid)
-    except Exception as e:
-        print("[karaoke] failed:", e)
-        return _with_cookie(JSONResponse({"ok": False, "error": fail}), sid)
+    payload = await run_in_threadpool(_work)
+    return _with_cookie(JSONResponse(payload), sid)
 
 
 # ---------------------------------------------------------------------------

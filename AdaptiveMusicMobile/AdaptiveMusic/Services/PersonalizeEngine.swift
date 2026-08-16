@@ -221,10 +221,6 @@ final class PersonalizeEngine: ObservableObject {
         karaoke = nil; karaokeMessage = nil; karaokeBusy = false
     }
 
-    private func failMessage(for mode: PersonalizeMode) -> String {
-        mode == .playlist ? PersonalizeEngine.playlistFailMessage : PersonalizeEngine.songFailMessage
-    }
-
     private func fetchKaraoke(current: SpotifyTrack?) async {
         guard let mode else { karaokeMessage = PersonalizeEngine.chooseMessage; return }
         karaokeBusy = true; karaokeMessage = nil
@@ -237,7 +233,8 @@ final class PersonalizeEngine: ObservableObject {
                 return
             }
             if mode == .song || mode == .playlist {
-                karaokeMessage = failMessage(for: mode)
+                // the spec's message for a failing CURRENT song is the song one, in every mode
+                karaokeMessage = PersonalizeEngine.songFailMessage
                 return
             }
             // vibe / artist: fall through to find another in-category song that works
@@ -245,41 +242,60 @@ final class PersonalizeEngine: ObservableObject {
 
         switch mode {
         case .song:
-            guard let track = await spotify.searchTrack(value, limit: 1).first,
-                  let pkg = await package(for: track) else {
-                karaokeMessage = PersonalizeEngine.songFailMessage
+            // the exact favorite song plays first; afterwards the loop continues with
+            // other songs by that artist (Claude round below), like « / » in song mode
+            let exactKey = "exact:" + value.lowercased()
+            if !karaokeTried.contains(exactKey) {
+                karaokeTried.insert(exactKey)
+                guard let track = await spotify.searchTrack(value, limit: 1).first,
+                      let pkg = await package(for: track) else {
+                    karaokeMessage = PersonalizeEngine.songFailMessage
+                    return
+                }
+                karaokeTried.insert(key(track))
+                await present(pkg)
                 return
             }
-            await present(pkg)
+            await claudeKaraokeRound()
         case .playlist:
             if playlistTracks.isEmpty {
                 if let pl = await spotify.playlistTracks(named: value) {
                     playlistTracks = pl.tracks; playlistName = pl.name; playlistCount = pl.tracks.count
                 }
             }
+            let start = playlistTracks.isEmpty ? 0 : min(max(0, playlistIndex), playlistTracks.count - 1)
             let rotated = playlistTracks.isEmpty ? [] :
-                Array(playlistTracks[playlistIndex...] + playlistTracks[..<playlistIndex])
+                Array(playlistTracks[start...] + playlistTracks[..<start])
+            var attempted = false
             for track in rotated.prefix(25) where !karaokeTried.contains(key(track)) {
+                attempted = true
                 karaokeTried.insert(key(track))
                 if let pkg = await package(for: track) { await present(pkg); return }
             }
+            if !attempted { karaokeTried = [] }        // whole window tried -> a retry starts over
             karaokeMessage = PersonalizeEngine.playlistFailMessage
         case .vibe, .artist:
-            // instrumental + lyrics should always exist for these — keep asking Claude
-            for _ in 0..<3 {
-                guard let suggestions = try? await claude.pickSongs(mode: mode, value: value,
-                                                                    label: stressLabel,
-                                                                    exclude: Array(karaokeTried)) else { break }
-                for s in suggestions {
-                    let k = "\(s.artist) — \(s.title)".lowercased()
-                    if karaokeTried.contains(k) { continue }
-                    karaokeTried.insert(k)
-                    guard let track = await spotify.search(artist: s.artist, title: s.title) else { continue }
-                    if let pkg = await package(for: track) { await present(pkg); return }
-                }
-            }
-            karaokeMessage = PersonalizeEngine.songFailMessage
+            await claudeKaraokeRound()
         }
+    }
+
+    /// Keep asking Claude for in-category songs until one has BOTH an instrumental
+    /// version and lyrics (vibe/artist always; song mode = other songs by the artist).
+    private func claudeKaraokeRound() async {
+        guard let mode else { return }
+        for _ in 0..<3 {
+            guard let suggestions = try? await claude.pickSongs(mode: mode, value: value,
+                                                                label: stressLabel,
+                                                                exclude: Array(karaokeTried)) else { break }
+            for s in suggestions {
+                let k = "\(s.artist) — \(s.title)".lowercased()
+                if karaokeTried.contains(k) { continue }
+                karaokeTried.insert(k)
+                guard let track = await spotify.search(artist: s.artist, title: s.title) else { continue }
+                if let pkg = await package(for: track) { await present(pkg); return }
+            }
+        }
+        karaokeMessage = PersonalizeEngine.songFailMessage
     }
 
     private func key(_ t: SpotifyTrack) -> String { "\(t.artist) — \(t.name)".lowercased() }

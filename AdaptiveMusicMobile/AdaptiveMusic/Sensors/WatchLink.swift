@@ -88,7 +88,7 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
 
     private func handle(_ message: [String: Any]) {
         if let rrs = message["rr"] as? [Double] {
-            for rr in rrs { hub.registerBeat(rrMs: rr) }
+            for rr in rrs { hub.registerBeat(rrMs: rr, skipZeroDiff: true) }
         } else if let bpmValue = message["bpm"] as? Double {
             hub.registerBPM(bpmValue)
         }
