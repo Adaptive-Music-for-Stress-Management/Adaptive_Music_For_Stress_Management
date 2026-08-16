@@ -145,7 +145,6 @@ function updateGraphs(s, beat) {
     else       { v = s[g.key]; active = v != null; }
     t.active = active;
     const valEl = $("gv-" + g.key);
-    $("gn-" + g.key).hidden = active || t.buf.length > 0 && active;
     $("gn-" + g.key).hidden = active;
     if (!active) {
       valEl.textContent = "--";

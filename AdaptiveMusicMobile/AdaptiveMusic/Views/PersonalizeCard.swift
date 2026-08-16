@@ -119,7 +119,7 @@ struct PersonalizeCard: View {
         VStack(spacing: 10) {
             if let track = engine.currentTrack {
                 VStack(spacing: 8) {
-                    Text("\(engine.karaoke != nil ? "" : "")\(track.name) — \(track.artist)")
+                    Text("\(track.name) — \(track.artist)")
                         .font(.system(size: 14, weight: .semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lineLimit(1)
