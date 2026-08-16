@@ -46,7 +46,7 @@ This branch carries both: the computer app at the repo root and the Xcode projec
   value, colored green / yellow / red, over a horizontal meter with all three labels.
   The empty card below the meter is where the Relief UI renders.
 - **Personalize** — the SUNO AI player (song name, adjustable timeline, « ▶ »): the
-  current song always comes from the `(BPM // 10) * 10` folder (clamped 60–150), fading
+  current song always comes from the `((BPM // 10) * 10) - 10` folder (clamped 60–150), fading
   out and in when the bucket changes, never repeating a song within a cycle. Below it,
   enter your **Anthropic API key** → **Connect Spotify** (Premium required) → pick
   **Vibe / Artist / Playlist / Song**; Claude names real songs, Spotify Search resolves

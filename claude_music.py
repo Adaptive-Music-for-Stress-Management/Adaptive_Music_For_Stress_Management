@@ -221,6 +221,43 @@ def resolve_one(mode, value, stress_label, exclude_names, api_key=None, model=No
     return fallback           # everything already played -> allow a repeat rather than silence
 
 
+def pick_playlist_track_index(tracks, stress_label, api_key=None, model=None):
+    """Choose a stress-appropriate track from the user's *actual* playlist.
+
+    The server already read the playlist with the user's Spotify token. Claude
+    only ranks those candidates, so it cannot hallucinate a track outside the
+    playlist. For very large playlists, present an evenly distributed subset to
+    keep the request responsive while preserving choices across the collection.
+    """
+    if not tracks:
+        return None
+    max_candidates = 100
+    if len(tracks) <= max_candidates:
+        choices = list(enumerate(tracks))
+    else:
+        step = (len(tracks) - 1) / (max_candidates - 1)
+        choices = [(round(i * step), tracks[round(i * step)]) for i in range(max_candidates)]
+    listing = "\n".join(
+        f'{index}: {track.get("artist", "Unknown artist")} — {track.get("name", "Untitled")}'
+        for index, track in choices
+    )
+    goal = STRESS_GOAL.get(stress_label, STRESS_GOAL["Mild-stress"])
+    ask = (
+        f"The listener's stress level is {stress_label}. The therapeutic goal is to {goal}.\n"
+        "Choose the one most suitable song from this exact Spotify playlist. "
+        "You may choose ONLY one listed index.\n"
+        f"{listing}\n"
+        'Answer ONLY JSON: {"index": <listed index>}'
+    )
+    try:
+        data = _parse_json(_complete(ask, api_key=api_key, model=model, max_tokens=60))
+        index = int(data.get("index")) if isinstance(data, dict) else -1
+        return index if any(index == listed for listed, _ in choices) else None
+    except Exception as e:
+        print(f"[playlist] Claude ranking failed: {e}", file=sys.stderr)
+        return None
+
+
 # ------------------- karaoke: instrumental + lyrics -------------------
 _INSTRUMENTAL_RE = re.compile(r"\b(instrumental|karaoke|backing\s*track)\b", re.I)
 

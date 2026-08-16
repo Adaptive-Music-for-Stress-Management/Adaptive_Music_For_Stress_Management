@@ -19,7 +19,7 @@ Baseline
     EEG is displayed instantly (it is not part of the stress score for now).
 
 Music
-    SUNO AI library:   BPM_folder/<60..150>/song_*.mp3 — bucket = clamp((bpm//10)*10, 60, 150),
+    SUNO AI library:   BPM_folder/<60..150>/song_*.mp3 — bucket = clamp((bpm//10)*10 - 10, 60, 150),
                        random song per bucket, no repeats within a cycle (cycle = all songs in the folder).
     Spotify + Claude:  the user's Anthropic key drives vibe / artist / playlist / song personalization,
                        karaoke (instrumental + LRCLIB synced lyrics). Spotify Premium required (Web
@@ -33,6 +33,7 @@ import time
 import glob
 import math
 import random
+import re
 import zipfile
 import threading
 import webbrowser
@@ -188,12 +189,22 @@ class PPGDetector:
     """Adaptive-threshold peak detector over the PPG stream -> beat timestamps.
     ThreadingOSCUDPServer handles packets on worker threads, so sample() locks."""
     def __init__(self):
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        """Discard detector state when a new input or baseline session begins."""
+        # This method may be called before the first packet as well as while the
+        # OSC server is live, so keep it safe to call independently of sample().
+        with getattr(self, "_lock", threading.Lock()):
+            self._reset_locked()
+
+    def _reset_locked(self):
         self.dc = None            # slow DC baseline
         self.env = 1.0            # amplitude envelope
         self.prev = 0.0
         self.above = False
         self.last_peak = 0.0
-        self._lock = threading.Lock()
 
     def sample(self, v, ts):
         if not math.isfinite(v):
@@ -351,6 +362,7 @@ async def api_input(request: Request):
     with HUB.lock:
         HUB.input = choice
         HUB.reset_session()
+    _PPG.reset()
 
     if choice == "demo":
         start_demo()
@@ -382,6 +394,7 @@ async def api_baseline(request: Request):
         HUB.stressed_start = stressed
         if stressed:
             HUB.baseline = dict(STRESSED_BASE)
+    _PPG.reset()
     return JSONResponse({"ok": True, "stressed": stressed,
                          "baseline": HUB.baseline, "calibration_sec": 0 if stressed else BASELINE_SEC})
 
@@ -413,7 +426,7 @@ def snapshot():
             "calibrating": calibrating,
             "calibration_left": None if cal_left is None else round(cal_left, 1),
             "baseline": HUB.baseline,
-            "bucket": None if not beats_fresh else max(60, min(150, int(HUB.bpm // 10) * 10)),
+            "bucket": None if not beats_fresh else _bucket_of(HUB.bpm),
             "muse_streaming": (now - HUB.osc_last_ts) < 5.0,
             "session_sec": int(now - HUB.session_t0),
         }
@@ -437,7 +450,13 @@ PLAYED = {}                    # bucket -> set(filenames served this cycle)
 PLAYED_LOCK = threading.Lock()
 
 def _bucket_of(bpm):
-    return max(60, min(150, int(bpm // 10) * 10))
+    """Return the calming song/circle bucket for a live heart rate.
+
+    The intervention intentionally starts one ten-BPM step below the listener's
+    current bucket. Values outside the available 60…150 BPM library clamp to
+    the nearest playable folder.
+    """
+    return max(60, min(150, int(bpm // 10) * 10 - 10))
 
 def _tracks_in(bucket):
     folder = os.path.join(MUSIC_DIR, str(bucket))
@@ -485,6 +504,7 @@ SESSIONS, SESS_LOCK = {}, threading.Lock()
 def _new_session():
     return {"key": "", "model": None,
             "mode": None, "value": "", "history": set(), "karaoke_tried": set(),
+            "seed_artist": None,      # resolved artist for Song mode follow-up suggestions
             "playlist": None,           # {"id","name","tracks":[track...],"index":int}
             "access": None, "refresh": None, "exp": 0.0, "state": None,
             "product": None}
@@ -532,7 +552,15 @@ def _sp_get(s, path, params=None):
     tok = _sp_token(s)
     if not tok:
         return None
-    r = _requests.get(f"https://api.spotify.com/v1{path}",
+    # Spotify's pagination links are absolute. Accept only its API URLs so a
+    # response cannot turn a server-side request into an arbitrary fetch.
+    if path.startswith("https://api.spotify.com/v1/"):
+        url = path
+    elif path.startswith("/"):
+        url = f"https://api.spotify.com/v1{path}"
+    else:
+        return None
+    r = _requests.get(url,
                       headers={"Authorization": f"Bearer {tok}"}, params=params or {}, timeout=15)
     if not r.ok:
         return None
@@ -622,17 +650,26 @@ def _current_label():
         return _stress_label(HUB.stress) or "Mild-stress"
 
 def _load_playlist(s, name):
-    """Find the user's playlist by name and load its tracks into the session."""
-    lists = _sp_get(s, "/me/playlists", {"limit": 50}) or {}
-    items = lists.get("items", []) or []
-    target, name_l = None, name.strip().lower()
-    for p in items:
-        if (p.get("name") or "").strip().lower() == name_l:
-            target = p; break
-    if target is None:
-        for p in items:                                  # fuzzy: substring match
-            if name_l in (p.get("name") or "").strip().lower():
-                target = p; break
+    """Find a playlist anywhere in the user's Spotify library and load it.
+
+    Spotify returns only 50 playlists per page. Previously a playlist beyond
+    that first page was reported as missing even though it existed.
+    """
+    target, fuzzy, name_l = None, None, name.strip().casefold()
+    page = _sp_get(s, "/me/playlists", {"limit": 50}) or {}
+    while page:
+        for p in page.get("items", []) or []:
+            p_name = (p.get("name") or "").strip()
+            if p_name.casefold() == name_l:
+                target = p
+                break
+            if fuzzy is None and name_l and name_l in p_name.casefold():
+                fuzzy = p
+        if target is not None:
+            break
+        next_page = page.get("next")
+        page = _sp_get(s, next_page) if next_page else None
+    target = target or fuzzy
     if target is None:
         return None
     tracks, url_path = [], f"/playlists/{target['id']}/tracks"
@@ -643,12 +680,26 @@ def _load_playlist(s, name):
             if t and t.get("uri") and not t.get("is_local"):
                 tracks.append(claude_music._track_dict(t))
         nxt = data.get("next")
-        if not nxt or len(tracks) >= 300:
+        if not nxt:
             break
-        data = _sp_get(s, nxt.replace("https://api.spotify.com/v1", ""), {})
+        data = _sp_get(s, nxt)
     if not tracks:
         return None
     return {"id": target["id"], "name": target.get("name"), "tracks": tracks, "index": 0}
+
+
+def _matches_personalization(mode, value, track, artist=None):
+    """Ensure a Spotify search did not silently resolve an unrelated result."""
+    if mode not in ("artist", "song"):
+        return True
+    wanted = (artist if mode == "artist" and artist else value).casefold().strip()
+    haystack = (track.get("artist", "") if mode == "artist" else track.get("name", "")).casefold()
+    if not wanted or not haystack:
+        return False
+    if wanted in haystack:
+        return True
+    words = [word for word in re.findall(r"[\w]+", wanted) if len(word) > 1]
+    return any(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", haystack) for word in words)
 
 
 @app.post("/api/personalize")
@@ -665,7 +716,7 @@ async def api_personalize(request: Request):
     direction = (body.get("direction") or "init").strip().lower()
     if mode not in ("vibe", "artist", "playlist", "song"):
         return _with_cookie(JSONResponse({"ok": False, "error": "bad mode"}, status_code=400), sid)
-    if not s["key"] and mode != "playlist":
+    if not s["key"]:
         return _with_cookie(JSONResponse({"ok": False, "error": "no_key"}), sid)
     if not s["access"]:
         return _with_cookie(JSONResponse({"ok": False, "error": "not_connected"}), sid)
@@ -675,6 +726,7 @@ async def api_personalize(request: Request):
     if mode != s.get("mode") or (value and value != s.get("value")):
         s["history"] = set(); s["karaoke_tried"] = set()
         s["playlist"] = None
+        s["seed_artist"] = None
     s["mode"], s["value"] = mode, value or s.get("value", "")
 
     # all the network work (Spotify, Claude) is blocking I/O — run it in the
@@ -691,7 +743,13 @@ async def api_personalize(request: Request):
                         return {"ok": False, "error": "playlist_not_found"}
                     s["playlist"] = pl
                 pl = s["playlist"]
-                if direction == "next":
+                if direction == "stress":
+                    idx = claude_music.pick_playlist_track_index(
+                        pl["tracks"], _current_label(), api_key=s["key"], model=s["model"])
+                    if idx is None:
+                        return {"ok": False, "error": "playlist_selection_failed"}
+                    pl["index"] = idx
+                elif direction == "next":
                     pl["index"] = (pl["index"] + 1) % len(pl["tracks"])
                 elif direction == "prev":
                     pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
@@ -701,14 +759,32 @@ async def api_personalize(request: Request):
                                      "count": len(pl["tracks"])}}
 
             if mode == "song" and direction == "init":
-                hits = claude_music.search_query(value, limit=1, user_token=tok)
-                if not hits:
+                hits = claude_music.search_query(value, limit=10, user_token=tok)
+                tr = next((hit for hit in hits if _matches_personalization("song", value, hit)), None)
+                if not tr:
                     return {"ok": False, "error": "not_found"}
-                tr = hits[0]
+                s["seed_artist"] = tr["artist"]
+            elif mode == "song":
+                # After the exact requested song, every next/previous/stress
+                # request remains with that resolved artist rather than asking
+                # Claude to infer it again from a title.
+                artist = s.get("seed_artist")
+                if not artist:
+                    hits = claude_music.search_query(value, limit=10, user_token=tok)
+                    seed = next((hit for hit in hits if _matches_personalization("song", value, hit)), None)
+                    if not seed:
+                        return {"ok": False, "error": "not_found"}
+                    artist = s["seed_artist"] = seed["artist"]
+                tr = claude_music.resolve_one("artist", artist, _current_label(), s["history"],
+                                              api_key=s["key"], model=s["model"], user_token=tok)
+                if not tr or not _matches_personalization("artist", artist, tr, artist=artist):
+                    return {"ok": False, "error": "not_found"}
             else:
                 tr = claude_music.resolve_one(mode, value, _current_label(), s["history"],
                                               api_key=s["key"], model=s["model"], user_token=tok)
                 if not tr:
+                    return {"ok": False, "error": "not_found"}
+                if not _matches_personalization(mode, value, tr):
                     return {"ok": False, "error": "not_found"}
             s["history"].add(_track_key(tr))
             return {"ok": True, "track": tr, "mode": mode}

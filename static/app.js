@@ -14,7 +14,8 @@ const fmtTime = s => {
   const m = Math.floor(s / 60), ss = Math.floor(s % 60);
   return String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
 };
-const bucketOf = bpm => clamp(Math.floor(bpm / 10) * 10, 60, 150);
+// Music and breathing start one ten-BPM bucket below the current heart rate.
+const bucketOf = bpm => clamp(Math.floor(bpm / 10) * 10 - 10, 60, 150);
 
 /* ============================ 1 · setup flow ============================ */
 const screens = {};
@@ -60,6 +61,7 @@ $("museConnectBtn").addEventListener("click", async () => {
 async function answerStressed(stressed) {
   try { await fetch("/api/baseline", {method:"POST", headers:{"Content-Type":"application/json"},
                                       body: JSON.stringify({stressed})}); } catch(e){}
+  stressLabelSeen = null;
   const flow = $("flow");
   flow.classList.add("fade-out");
   setTimeout(() => { flow.hidden = true; }, 450);
@@ -90,6 +92,26 @@ function onSnapshot(s, beat) {
   updateChrome(s);
   sunoTick(s);
   breatheTick(s);
+  adaptSpotifyToStress(s);
+}
+
+async function adaptSpotifyToStress(s) {
+  const label = s.stress_label;
+  if (!label) return;
+  if (stressLabelSeen == null) {
+    stressLabelSeen = label;                 // establish the initial label without interrupting playback
+    return;
+  }
+  if (label === stressLabelSeen) return;
+  stressLabelSeen = label;
+  if (stressAdaptInFlight || !spMode || !spTrack || audioSource !== "spotify") return;
+  stressAdaptInFlight = true;
+  try {
+    if (karaokeActive) await fetchKaraoke(null, false);
+    else await spRequestTrack("stress");
+  } finally {
+    stressAdaptInFlight = false;
+  }
 }
 
 function updateChrome(s) {
@@ -336,6 +358,7 @@ $("sunoBar").addEventListener("input", () => {
 let spPlayer = null, spDeviceId = null, spConnected = false, spPremium = false, spKeySet = false;
 let spMode = null, spValue = "", spTrack = null, spIsPlaying = false;
 let spLastPos = 0, spDuration = 0, spDragging = false;
+let stressLabelSeen = null, stressAdaptInFlight = false;
 
 async function spToken() {
   try { return (await (await fetch("/api/spotify/token")).json()).access_token; } catch(e){ return null; }
@@ -413,13 +436,19 @@ async function confirmPref() {
   const value = $("prefInput").value.trim();
   if (!value || !tabMode) return;
   spMode = tabMode; spValue = value;
-  $("prefMsg").textContent = "asking Claude…";
-  $("prefMsg").className = "setup-msg mono";
+  setPrefLoading(tabMode === "playlist" ? "loading your playlist…" : "asking Claude…");
   if (karaokeActive) { fetchKaraoke(null); return; }     // in karaoke mode the choice feeds karaoke
   const ok = await spRequestTrack("init");
   if (ok) $("prefMsg").textContent = "";
 }
+function setPrefLoading(message) {
+  $("prefMsg").innerHTML = '<span class="spin"></span>' + message;
+  $("prefMsg").className = "setup-msg mono loading";
+}
 async function spRequestTrack(direction) {
+  if (direction !== "init") {
+    setPrefLoading(direction === "stress" ? "adapting to your current stress level…" : "asking Claude…");
+  }
   try {
     const r = await fetch("/api/personalize", {method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({mode: spMode, value: spValue, direction})});
@@ -430,6 +459,7 @@ async function spRequestTrack(direction) {
         not_connected: "Connect Spotify first.",
         not_premium: "I apologize, but you need Spotify premium to access this feature.",
         playlist_not_found: "Couldn't find a playlist with that name in your library.",
+        playlist_selection_failed: "Couldn't choose a suitable song from that playlist — try again.",
         not_found: "Couldn't find a matching song — try different wording.",
       };
       $("prefMsg").textContent = errs[j.error] || ("Something went wrong: " + (j.error || "unknown"));
@@ -439,38 +469,63 @@ async function spRequestTrack(direction) {
     if (j.playlist) $("spModeSub").textContent =
         `playlist · ${j.playlist.name} · ${j.playlist.index + 1}/${j.playlist.count}`;
     else $("spModeSub").textContent = spMode + " · " + spValue;
-    await spPlayTrack(j.track);
-    return true;
+    const started = await spPlayTrack(j.track);
+    if (started) {
+      $("prefMsg").textContent = "";
+      $("prefMsg").className = "setup-msg mono";
+    }
+    return started;
   } catch(e) {
     $("prefMsg").textContent = "Request failed — is the server still running?";
     $("prefMsg").className = "setup-msg mono err";
     return false;
   }
 }
-async function spPlayTrack(track) {
+async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
   claimAudio("spotify");
   await maybeInitSpotify();
   if (!spDeviceId) await new Promise(r => setTimeout(r, 800));
   if (!spDeviceId) {
     $("prefMsg").textContent = "Spotify player not ready yet — try again in a moment.";
     $("prefMsg").className = "setup-msg mono err";
-    return;
+    return false;
   }
   const tok = await spToken();
   try {
     if (spTrack && spPlayer) await spFade(0, 500);                    // fade out old
-    await fetch("https://api.spotify.com/v1/me/player/play?device_id=" + spDeviceId, {
+    const safePosition = Math.max(0, Math.min(Math.round(positionMs || 0), Math.max(0, (track.duration_ms || 0) - 250)));
+    const response = await fetch("https://api.spotify.com/v1/me/player/play?device_id=" + spDeviceId, {
       method: "PUT", headers: {Authorization: "Bearer " + tok, "Content-Type": "application/json"},
-      body: JSON.stringify({uris: [track.uri]}),
+      body: JSON.stringify({uris: [track.uri], position_ms: safePosition}),
     });
+    if (!response.ok) throw new Error("Spotify playback request failed (" + response.status + ")");
     spTrack = track;
     spDuration = track.duration_ms || 0;
     $("spTrackName").textContent = track.name + " — " + (track.artist || "");
     $("spPlayerUI").hidden = false;
-    $("spPlayBtn").innerHTML = "&#10074;&#10074;";
-    spIsPlaying = true;
-    if (spPlayer) { try { await spPlayer.setVolume(0); } catch(e){} spFade(0.9, 900); }  // fade in new
-  } catch(e) { console.warn("[spotify] play failed", e); }
+    spLastPos = safePosition;
+    if (spPlayer) {
+      try { await spPlayer.setVolume(0); } catch(e){}
+      if (autoplay) {
+        $("spPlayBtn").innerHTML = "&#10074;&#10074;";
+        spIsPlaying = true;
+        spFade(0.9, 900);                                                // fade in new
+      } else {
+        // Spotify's API has no "load this track paused" endpoint. Start it at
+        // zero volume, then pause immediately so a user pause during karaoke
+        // lookup stays a pause after the instrumental is ready.
+        await spPlayer.pause().catch(()=>{});
+        $("spPlayBtn").innerHTML = "&#9654;";
+        spIsPlaying = false;
+      }
+    }
+    return true;
+  } catch(e) {
+    console.warn("[spotify] play failed", e);
+    $("prefMsg").textContent = "Spotify couldn't start that song — try again.";
+    $("prefMsg").className = "setup-msg mono err";
+    return false;
+  }
 }
 async function spFade(to, ms) {
   if (!spPlayer) return;
@@ -553,6 +608,7 @@ $("rPlay").addEventListener("click", () => setRelief("play"));
 
 /* ============================ 9 · karaoke ============================ */
 let karaokeActive = false, lyricLines = [], lyricEls = [], lyricIdx = -1;
+let karaokeFetching = false;
 const KMSG = {
   not_initialized: "I apologize, but you must first initialize the personalized music feature.",
   no_choice: "I apologize, but you must first choose a vibe, artist, playlist, or song to play",
@@ -568,9 +624,18 @@ function enterKaraoke() {
   // a song already playing? ask for THAT song's instrumental + lyrics
   const current = (audioSource === "spotify" && spTrack)
       ? {name: spTrack.name, artist: spTrack.artist, duration_ms: spTrack.duration_ms} : null;
-  fetchKaraoke(current);
+  fetchKaraoke(current, !!current);
 }
-async function fetchKaraoke(current) {
+async function currentSpotifyPlayback() {
+  try {
+    const state = spPlayer && await spPlayer.getCurrentState();
+    if (state) return {positionMs: state.position || 0, wasPlaying: !state.paused};
+  } catch(e) {}
+  return {positionMs: 0, wasPlaying: spIsPlaying};
+}
+async function fetchKaraoke(current, preservePlayback = false) {
+  if (karaokeFetching) return;
+  karaokeFetching = true;
   kShow("karaokeLoading");
   let j = null;
   try {
@@ -580,17 +645,32 @@ async function fetchKaraoke(current) {
                                            body: JSON.stringify({current, mode: spMode, value: spValue})});
     j = await r.json();
   } catch(e){}
-  if (!karaokeActive) return;
-  if (!j || !j.ok) {
-    $("karaokeMsg").textContent = KMSG[(j && j.error) || "song"] || KMSG.song;
-    kShow("karaokeMsg");
-    return;
+  try {
+    if (!karaokeActive) return;
+    if (!j || !j.ok) {
+      $("karaokeMsg").textContent = KMSG[(j && j.error) || "song"] || KMSG.song;
+      kShow("karaokeMsg");
+      return;
+    }
+    // The original track keeps playing during lookup. Capture its current
+    // position only after both karaoke resources are available, then start the
+    // instrumental at that exact moment.
+    const sameSource = current && j.source &&
+      current.name === j.source.name && current.artist === j.source.artist;
+    const playback = preservePlayback && sameSource
+      ? await currentSpotifyPlayback()
+      : {positionMs: 0, wasPlaying: true};
+    renderLyrics(j.lyrics);
+    syncLyrics(playback.positionMs);
+    kShow("lyricsBox");
+    const started = await spPlayTrack(j.instrumental, {
+      positionMs: playback.positionMs,
+      autoplay: playback.wasPlaying,
+    });
+    if (started) $("spModeSub").textContent = "karaoke · " + (j.source ? j.source.name : "");
+  } finally {
+    karaokeFetching = false;
   }
-  renderLyrics(j.lyrics);
-  kShow("lyricsBox");
-  // play the INSTRUMENTAL — track name + timeline switch to the instrumental's data
-  await spPlayTrack(j.instrumental);
-  $("spModeSub").textContent = "karaoke · " + (j.source ? j.source.name : "");
 }
 function renderLyrics(ly) {
   const box = $("lyricsBox");
@@ -632,7 +712,7 @@ function syncLyrics(posMs) {
 /* ============================ 10 · breathe ============================ */
 let breatheOn = false, breatheBuffering = true, breatheTarget = null;
 let audioCtx = null, analyser = null, waveData = null, breatheRAF = 0;
-let energyHist = [], lastBeatAt = 0;
+let energyHist = [], lastPeakAt = 0, breathePulseTimer = 0, breatheCollapseTimer = 0;
 const BMSG = "I apologize, but you must enable the AI-generated songs to use the breathe feature";
 
 function ensureAudioGraph() {
@@ -651,6 +731,7 @@ function ensureAudioGraph() {
 function breatheSourceCheck() {
   if (!breatheOn) return;
   const blocked = audioSource === "spotify";
+  if (blocked) setBuffering(true);
   $("breatheMsg").textContent = BMSG;
   $("breatheMsg").hidden = !blocked;
   $("breatheWrap").style.display = blocked ? "none" : "";
@@ -668,10 +749,17 @@ function exitBreathe() {
   breatheOn = false;
   sunoOverride = null;
   cancelAnimationFrame(breatheRAF); breatheRAF = 0;
+  stopSteadyBreath();
+  $("breatheLoading").hidden = true;
   $("bCircle").classList.remove("buffering");
 }
 function baselineBucket() {
-  return (S && S.baseline && S.baseline.bpm) ? bucketOf(S.baseline.bpm) : 60;
+  // The target may begin one bucket below the live BPM, but it must not guide
+  // someone below their measured baseline. Round up to the nearest playable
+  // ten-BPM value to honour that safety floor.
+  return (S && S.baseline && S.baseline.bpm)
+    ? clamp(Math.ceil(S.baseline.bpm / 10) * 10, 60, 150)
+    : 60;
 }
 function breatheRetarget(force) {
   // circle frequency = ((BPM // 10) * 10) - 10, never below the user's baseline
@@ -682,7 +770,7 @@ function breatheRetarget(force) {
     sunoOverride = target;                        // the song maps to the target BPM folder
     $("breatheTarget").textContent = "target " + target + " BPM · baseline " + baselineBucket() + " BPM";
     setBuffering(true);
-    if (!sunoPlaying) { claimAudio("suno"); sunoLoad(target, true); }
+    if (!sunoPlaying || sunoBucket !== target) { claimAudio("suno"); sunoLoad(target, true); }
   }
 }
 function breatheTick(s) {
@@ -699,14 +787,23 @@ function breatheTick(s) {
 function breatheOnSongChange() {                   // every song change waits for the next beat
   if (breatheOn) setBuffering(true);
 }
+function stopSteadyBreath() {
+  if (breathePulseTimer) clearTimeout(breathePulseTimer);
+  if (breatheCollapseTimer) clearTimeout(breatheCollapseTimer);
+  breathePulseTimer = 0;
+  breatheCollapseTimer = 0;
+}
 function setBuffering(on) {
   breatheBuffering = on;
+  if (on) stopSteadyBreath();
   $("bCircle").classList.toggle("buffering", on);
+  $("breatheLoading").hidden = !on;
   $("breatheStatus").textContent = on ? "buffering · waiting for the beat…" : "breathe with the circle";
 }
 function startBeatLoop() {
   cancelAnimationFrame(breatheRAF);
   energyHist = [];
+  lastPeakAt = 0;
   const canvas = $("waveCanvas"), cctx = canvas.getContext("2d");
   const loop = () => {
     if (!breatheOn) return;
@@ -722,24 +819,33 @@ function startBeatLoop() {
     const avg = energyHist.reduce((a, b) => a + b, 0) / energyHist.length;
     const now = performance.now();
     const interval = 60000 / (breatheTarget || 60);
-    if (sunoPlaying && audioSource === "suno" &&
-        energy > Math.max(0.02, avg * 1.35) && now - lastBeatAt > interval * 0.55) {
-      lastBeatAt = now;
-      onBeat(interval);
+    // Analyse waveform peaks only long enough to align the first expansion to
+    // the music. The subsequent cycle is an even BPM clock, not a repeated
+    // reaction to each amplitude spike.
+    if (breatheBuffering && sunoPlaying && !sunoFetching && sunoBucket === breatheTarget &&
+        audioSource === "suno" && energyHist.length > 8 &&
+        energy > Math.max(0.02, avg * 1.35) && now - lastPeakAt > 250) {
+      lastPeakAt = now;
+      alignBreathToFirstPeak(interval);
     }
     drawWave(cctx, canvas);
   };
   loop();
 }
-function onBeat(interval) {
-  if (breatheBuffering) setBuffering(false);
+function alignBreathToFirstPeak(interval) {
+  setBuffering(false);
+  runSteadyBreath(interval);
+}
+function runSteadyBreath(interval) {
+  if (!breatheOn || breatheBuffering || audioSource !== "suno") return;
   const c = $("bCircle");
   c.style.transition = "transform .13s ease-out";          // expand instantly on the spike
   c.style.transform = "scale(1)";
-  setTimeout(() => {
+  breatheCollapseTimer = setTimeout(() => {
     c.style.transition = "transform " + Math.round(interval * 0.8) + "ms ease-in";
     c.style.transform = "scale(.55)";
   }, 140);
+  breathePulseTimer = setTimeout(() => runSteadyBreath(interval), interval);
 }
 function drawWave(cctx, canvas) {
   const r = canvas.getBoundingClientRect();
