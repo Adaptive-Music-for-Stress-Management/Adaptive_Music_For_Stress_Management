@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Adaptive Music · Stress Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script>
+  window.onSpotifyWebPlaybackSDKReady = function(){ window._sdkLoaded = true; if (typeof maybeInitSpotify === "function") maybeInitSpotify(); };
+</script>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
+<link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+
+<!-- ================= setup flow ================= -->
+<div id="flow">
+  <section class="screen active" id="scr-device">
+    <div class="flow-card">
+      <h1>Adaptive Music <span>for stress management</span></h1>
+      <p class="flow-sub">Choose your device</p>
+      <div class="flow-opts">
+        <button class="flow-opt" data-go="mobile">
+          <span class="fo-name">Mobile</span>
+          <span class="fo-desc">iPhone camera reader · Apple Watch</span>
+        </button>
+        <button class="flow-opt" data-go="computer">
+          <span class="fo-name">Computer</span>
+          <span class="fo-desc">Muse 2 headband · demo mode</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-mobile-note">
+    <div class="flow-card">
+      <h1>Mobile</h1>
+      <p class="flow-sub">The mobile experience is a native iOS app.<br>
+        Open the <span class="mono">final_mobile</span> branch of this repository in Xcode and run it on your iPhone.</p>
+      <div class="flow-opts"><button class="flow-opt slim" data-go="device-back">← Back</button></div>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-input">
+    <div class="flow-card">
+      <h1>Computer input</h1>
+      <p class="flow-sub">How should we read your biosignals?</p>
+      <div class="flow-opts">
+        <button class="flow-opt" data-go="muse">
+          <span class="fo-name">Muse 2 headband</span>
+          <span class="fo-desc">Stream EEG · BPM · HRV live via Petal Metrics</span>
+        </button>
+        <button class="flow-opt" data-go="demo">
+          <span class="fo-name">Demo mode</span>
+          <span class="fo-desc">Simulated biosignals — no hardware needed</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-muse">
+    <div class="flow-card">
+      <h1>Muse 2 headband</h1>
+      <p class="flow-sub">Start <b>Petal Metrics</b> and stream OSC to this machine, then connect.</p>
+      <div class="flow-opts">
+        <button class="flow-opt" id="museConnectBtn">
+          <span class="fo-name">Connect and read Muse 2 headband</span>
+          <span class="fo-desc mono" id="museOscHint">waiting on udp://127.0.0.1:14739</span>
+        </button>
+      </div>
+      <p class="flow-err" id="museErr" hidden>I apologize, but there was an error in connecting your Muse 2 Headband.</p>
+      <div class="flow-opts"><button class="flow-opt slim" data-go="input-back">← Back</button></div>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-stressed">
+    <div class="flow-card">
+      <h1>One last thing</h1>
+      <p class="flow-sub big">Are you stressed?</p>
+      <div class="flow-opts row">
+        <button class="flow-opt half" id="stressedYes"><span class="fo-name">Yes</span>
+          <span class="fo-desc">Use resting norms · 60 BPM · 20 ms</span></button>
+        <button class="flow-opt half" id="stressedNo"><span class="fo-name">No</span>
+          <span class="fo-desc">Calibrate from your first 30 seconds</span></button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ================= dashboard ================= -->
+<div id="dash" hidden>
+  <header>
+    <div class="brand"><b>ADAPTIVE MUSIC</b><span>STRESS MANAGEMENT</span></div>
+    <div class="pill mono" id="inputPill">—</div>
+    <div class="pill mono" id="calPill" hidden>calibrating…</div>
+    <div class="spacer"></div>
+    <div class="pill mono" id="clock">00:00:00</div>
+  </header>
+
+  <main>
+    <!-- left: graphs -->
+    <section class="col col-left">
+      <div class="card" id="graphsCard">
+        <h2 class="card-title">Graphs</h2>
+        <div class="gstack" id="gstack"></div>
+      </div>
+    </section>
+
+    <!-- center: meter + relief -->
+    <section class="col col-center">
+      <div class="card meter-card">
+        <h2 class="card-title">Meter</h2>
+        <div class="stress-label" id="stressLabel">—</div>
+        <div class="stress-value mono" id="stressValue">--</div>
+        <div class="meter-wrap">
+          <div class="meter-bar">
+            <div class="meter-needle" id="meterNeedle"></div>
+          </div>
+          <div class="meter-legend">
+            <span class="ml-calm">Calm</span><span class="ml-mild">Mild-stress</span><span class="ml-stress">Stressed</span>
+          </div>
+        </div>
+
+        <!-- the relief UI renders here, below the horizontal meter -->
+        <div class="card inner-card" id="reliefStage">
+          <div class="rs-empty" id="rsEmpty">Choose a relief option below</div>
+
+          <div class="rs-view" id="rsKaraoke" hidden>
+            <div class="rs-msg" id="karaokeMsg" hidden></div>
+            <div class="k-loading" id="karaokeLoading" hidden><span class="spin"></span> finding instrumental &amp; lyrics…</div>
+            <div class="lyrics" id="lyricsBox" hidden></div>
+          </div>
+
+          <div class="rs-view" id="rsBreathe" hidden>
+            <div class="rs-msg" id="breatheMsg" hidden></div>
+            <div class="breathe-wrap" id="breatheWrap">
+              <div class="b-status mono" id="breatheStatus">waiting for the beat…</div>
+              <div class="circle-box"><div class="b-circle" id="bCircle"></div></div>
+              <canvas id="waveCanvas" class="wave"></canvas>
+              <div class="b-target mono" id="breatheTarget"></div>
+            </div>
+          </div>
+
+          <div class="rs-view" id="rsPlay" hidden>
+            <div class="pa-toggle">
+              <button class="pa-btn on" id="paPiano">Piano</button>
+              <button class="pa-btn" id="paDrums">Drums</button>
+            </div>
+            <div id="pianoBox" class="piano"></div>
+            <div id="drumBox" class="drums" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card relief-card">
+        <h2 class="card-title">Relief</h2>
+        <div class="relief-opts">
+          <button class="ropt" id="rKaraoke">Karaoke</button>
+          <button class="ropt" id="rBreathe">Breathe</button>
+          <button class="ropt" id="rPlay">Play-along</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- right: personalize -->
+    <section class="col col-right">
+      <div class="card personalize-card">
+        <h2 class="card-title">Personalize</h2>
+
+        <!-- SUNO AI player -->
+        <div class="player" id="sunoPlayer">
+          <div class="p-name" id="sunoName">no song loaded</div>
+          <div class="p-timeline">
+            <span class="mono t-cur" id="sunoCur">00:00</span>
+            <input type="range" id="sunoBar" min="0" max="1000" value="0"/>
+            <span class="mono t-end" id="sunoEnd">00:00</span>
+          </div>
+          <div class="p-controls">
+            <button class="pc-btn" id="sunoPrev">&#171;</button>
+            <button class="pc-btn big" id="sunoPlay">&#9654;</button>
+            <button class="pc-btn" id="sunoNext">&#187;</button>
+          </div>
+          <div class="p-sub mono" id="sunoBucket"></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Spotify + Claude personalization -->
+        <div id="spSetup">
+          <div class="setup-row" id="keyRow">
+            <input type="password" id="antKey" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off"/>
+            <button class="btn" id="antConfirm">Confirm</button>
+          </div>
+          <button class="btn spotify" id="spConnect" hidden>Connect Spotify</button>
+          <div class="setup-msg mono" id="spMsg"></div>
+        </div>
+
+        <div id="spFull" hidden>
+          <div class="player" id="spPlayerUI" hidden>
+            <div class="p-name" id="spTrackName">—</div>
+            <div class="p-timeline">
+              <span class="mono t-cur" id="spCur">00:00</span>
+              <input type="range" id="spBar" min="0" max="1000" value="0"/>
+              <span class="mono t-end" id="spEnd">00:00</span>
+            </div>
+            <div class="p-controls">
+              <button class="pc-btn" id="spPrevBtn">&#171;</button>
+              <button class="pc-btn big" id="spPlayBtn">&#9654;</button>
+              <button class="pc-btn" id="spNextBtn">&#187;</button>
+            </div>
+            <div class="p-sub mono" id="spModeSub"></div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab" data-mode="vibe">Vibe</button>
+            <button class="tab" data-mode="artist">Artist</button>
+            <button class="tab" data-mode="playlist">Playlist</button>
+            <button class="tab" data-mode="song">Song</button>
+          </div>
+          <div class="tab-menu" id="tabMenu" hidden>
+            <input type="text" id="prefInput" placeholder=""/>
+            <button class="btn" id="prefConfirm">Confirm</button>
+          </div>
+          <div class="setup-msg mono" id="prefMsg"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<audio id="audioA" preload="auto"></audio>
+<audio id="audioB" preload="auto"></audio>
+<script src="/static/app.js"></script>
+</body>
+</html>

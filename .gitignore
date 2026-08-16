@@ -1,0 +1,10 @@
+# runtime artifacts
+BPM_folder/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Xcode
+xcuserdata/
+DerivedData/
+build/
