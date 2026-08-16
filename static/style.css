@@ -197,7 +197,8 @@ input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.25)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .setup-msg{font-size:11px;color:var(--muted);margin-top:9px;line-height:1.5;min-height:14px}
 .setup-msg.err{color:var(--stressed)}
-.setup-msg.loading{display:flex;align-items:center;gap:7px}
+.setup-msg.loading{display:flex;align-items:center;gap:7px;opacity:1;transition:opacity .25s ease}
+.setup-msg.loading.fading{opacity:0}
 .setup-msg.loading .spin{width:12px;height:12px;flex:0 0 12px}
 
 .tabs{display:flex;gap:6px;margin-top:12px}

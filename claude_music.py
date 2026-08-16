@@ -28,6 +28,7 @@ import time
 import base64
 import random
 import threading
+import unicodedata
 
 import requests
 
@@ -121,6 +122,24 @@ def search_query(query, market=None, limit=5, user_token=None):
     except Exception as e:
         print(f"[spotify] query search failed for {query!r}: {e}", file=sys.stderr)
         return []
+
+
+def artists_match(expected, candidate):
+    """Return whether two Spotify artist credits refer to the same artist.
+
+    Spotify sometimes removes accents or appends credits such as "feat.". The
+    comparison tolerates those harmless presentation differences while rejecting
+    unrelated karaoke/tribute artists.
+    """
+    def normalise(value):
+        value = unicodedata.normalize("NFKD", value or "")
+        value = "".join(ch for ch in value if not unicodedata.combining(ch))
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.casefold())).strip()
+
+    wanted, actual = normalise(expected), normalise(candidate)
+    if not wanted or not actual:
+        return False
+    return wanted == actual or f" {wanted} " in f" {actual} " or f" {actual} " in f" {wanted} "
 
 
 # ------------------- Claude -------------------
@@ -274,7 +293,7 @@ def find_instrumental(track_name, artist, api_key=None, model=None, user_token=N
     # de-dup by id, keep order
     seen, uniq = set(), []
     for tr in candidates:
-        if tr["id"] not in seen:
+        if tr["id"] not in seen and artists_match(artist, tr.get("artist", "")):
             uniq.append(tr); seen.add(tr["id"])
     if not uniq:
         return None
@@ -360,6 +379,8 @@ def pick_karaoke_song(mode, value, stress_label, exclude_names, api_key=None, mo
             tried.add(key)
             tr = search_track(c["artist"], c["title"], user_token=user_token)
             if not tr:
+                continue
+            if mode == "artist" and not artists_match(value, tr.get("artist", "")):
                 continue
             pkg = karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
                                   api_key=api_key, model=model, user_token=user_token)

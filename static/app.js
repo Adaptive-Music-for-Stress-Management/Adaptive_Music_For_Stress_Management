@@ -425,7 +425,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     $("tabMenu").hidden = false;
     $("prefInput").placeholder = TAB_PLACEHOLDER[tabMode];
     $("prefInput").value = "";
-    $("prefMsg").textContent = "";
+    clearPrefLoading();
     $("prefInput").focus();
   });
 });
@@ -439,11 +439,22 @@ async function confirmPref() {
   setPrefLoading(tabMode === "playlist" ? "loading your playlist…" : "asking Claude…");
   if (karaokeActive) { fetchKaraoke(null); return; }     // in karaoke mode the choice feeds karaoke
   const ok = await spRequestTrack("init");
-  if (ok) $("prefMsg").textContent = "";
+  if (ok) clearPrefLoading();
 }
 function setPrefLoading(message) {
   $("prefMsg").innerHTML = '<span class="spin"></span>' + message;
   $("prefMsg").className = "setup-msg mono loading";
+}
+function clearPrefLoading() {
+  const msg = $("prefMsg");
+  if (!msg.classList.contains("loading")) return;
+  msg.classList.add("fading");
+  setTimeout(() => {
+    // A newer request may already have reused this message element.
+    if (!msg.classList.contains("fading")) return;
+    msg.textContent = "";
+    msg.className = "setup-msg mono";
+  }, 260);
 }
 async function spRequestTrack(direction) {
   if (direction !== "init") {
@@ -470,10 +481,7 @@ async function spRequestTrack(direction) {
         `playlist · ${j.playlist.name} · ${j.playlist.index + 1}/${j.playlist.count}`;
     else $("spModeSub").textContent = spMode + " · " + spValue;
     const started = await spPlayTrack(j.track);
-    if (started) {
-      $("prefMsg").textContent = "";
-      $("prefMsg").className = "setup-msg mono";
-    }
+    if (started) clearPrefLoading();
     return started;
   } catch(e) {
     $("prefMsg").textContent = "Request failed — is the server still running?";
@@ -670,6 +678,7 @@ async function fetchKaraoke(current, preservePlayback = false) {
     if (started) $("spModeSub").textContent = "karaoke · " + (j.source ? j.source.name : "");
   } finally {
     karaokeFetching = false;
+    clearPrefLoading();
   }
 }
 function renderLyrics(ly) {

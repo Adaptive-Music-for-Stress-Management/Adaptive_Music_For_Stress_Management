@@ -813,6 +813,7 @@ async def api_karaoke(request: Request):
     if b_mode in ("vibe", "artist", "playlist", "song"):
         if b_mode != s.get("mode") or (b_value and b_value != s.get("value")):
             s["history"] = set(); s["karaoke_tried"] = set(); s["playlist"] = None
+            s["seed_artist"] = None
         s["mode"] = b_mode
         if b_value:
             s["value"] = b_value
@@ -868,9 +869,9 @@ async def api_karaoke(request: Request):
                 exact_key = (s.get("value") or "").strip().lower()
                 if exact_key and ("exact:" + exact_key) not in s["karaoke_tried"]:
                     s["karaoke_tried"].add("exact:" + exact_key)
-                    hits = claude_music.search_query(s["value"], limit=1, user_token=tok)
-                    if hits:
-                        tr = hits[0]
+                    hits = claude_music.search_query(s["value"], limit=10, user_token=tok)
+                    tr = next((hit for hit in hits if _matches_personalization("song", s["value"], hit)), None)
+                    if tr:
                         pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
                                                            api_key=s["key"], model=s["model"], user_token=tok)
                         if pkg:

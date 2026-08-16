@@ -86,5 +86,18 @@ class PersonalizationGuardTests(unittest.TestCase):
         self.assertFalse(server._matches_personalization("artist", "Daft Punk", track))
 
 
+class InstrumentalArtistTests(unittest.TestCase):
+    def test_artist_matching_tolerates_accents_but_rejects_an_unrelated_artist(self):
+        self.assertTrue(claude_music.artists_match("Beyoncé", "Beyonce feat. Jay-Z"))
+        self.assertFalse(claude_music.artists_match("Beyoncé", "Piano Tribute Players"))
+
+    def test_instrumental_search_filters_out_other_artists_before_claude_can_choose(self):
+        wrong = {"id": "wrong", "name": "Song Instrumental", "artist": "Piano Tribute Players", "album": "Covers"}
+        right = {"id": "right", "name": "Song Instrumental", "artist": "Beyonce", "album": "Singles"}
+        with patch.object(claude_music, "search_query", return_value=[wrong, right]):
+            result = claude_music.find_instrumental("Song", "Beyoncé")
+        self.assertEqual(result["id"], "right")
+
+
 if __name__ == "__main__":
     unittest.main()
