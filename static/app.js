@@ -839,12 +839,21 @@ function alignBreathToFirstPeak(interval) {
 function runSteadyBreath(interval) {
   if (!breatheOn || breatheBuffering || audioSource !== "suno") return;
   const c = $("bCircle");
-  c.style.transition = "transform .13s ease-out";          // expand instantly on the spike
+  const halfCycle = Math.max(100, Math.round(interval / 2));
+  // A waveform peak is the full expansion. Contract for half a beat, then
+  // expand for the same half-beat so the next full expansion lands exactly on
+  // the next BPM tick.
+  c.style.transition = "transform 0ms";
   c.style.transform = "scale(1)";
-  breatheCollapseTimer = setTimeout(() => {
-    c.style.transition = "transform " + Math.round(interval * 0.8) + "ms ease-in";
+  requestAnimationFrame(() => {
+    if (!breatheOn || breatheBuffering || audioSource !== "suno") return;
+    c.style.transition = "transform " + halfCycle + "ms ease-in-out";
     c.style.transform = "scale(.55)";
-  }, 140);
+  });
+  breatheCollapseTimer = setTimeout(() => {
+    c.style.transition = "transform " + halfCycle + "ms ease-in-out";
+    c.style.transform = "scale(1)";
+  }, halfCycle);
   breathePulseTimer = setTimeout(() => runSteadyBreath(interval), interval);
 }
 function drawWave(cctx, canvas) {
