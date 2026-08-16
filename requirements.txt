@@ -1,6 +1,5 @@
 fastapi
 uvicorn[standard]
-numpy
 requests
 anthropic
-pyserial
+python-osc
