@@ -429,13 +429,23 @@ document.querySelectorAll(".tab").forEach(tab => {
     $("playlistMenu").hidden = !isPlaylist;
     $("prefInput").placeholder = TAB_PLACEHOLDER[tabMode];
     $("prefInput").value = "";
-    clearPrefLoading();
+    clearPrefMessage();
+    if (!isPlaylist) clearPlaylistPickerSelection();
     if (isPlaylist) loadPlaylistPicker();
     else $("prefInput").focus();
   });
 });
 $("prefConfirm").addEventListener("click", confirmPref);
 $("prefInput").addEventListener("keydown", e => { if (e.key === "Enter") confirmPref(); });
+$("prefInput").addEventListener("input", () => {
+  if (tabMode !== "playlist") {
+    // A new non-playlist preference supersedes any failed playlist attempt
+    // before the user presses Confirm, so neither its error nor green button
+    // selection can leak into the new flow.
+    clearPrefMessage();
+    clearPlaylistPickerSelection();
+  }
+});
 
 async function confirmPref() {
   const value = $("prefInput").value.trim();
@@ -460,6 +470,22 @@ function clearPrefLoading() {
     msg.textContent = "";
     msg.className = "setup-msg mono";
   }, 260);
+}
+function clearPrefMessage() {
+  // Unlike clearPrefLoading, this deliberately clears errors as well as the
+  // transient Claude message when the user starts a different preference.
+  const msg = $("prefMsg");
+  msg.textContent = "";
+  msg.className = "setup-msg mono";
+}
+function clearPlaylistPickerSelection() {
+  spPlaylistId = null;
+  if (playlistCatalog) renderPlaylistPicker();
+  else {
+    const list = $("playlistList");
+    list.textContent = "";
+    list.className = "playlist-list";
+  }
 }
 async function loadPlaylistPicker() {
   if (playlistLoading) return playlistLoading;
