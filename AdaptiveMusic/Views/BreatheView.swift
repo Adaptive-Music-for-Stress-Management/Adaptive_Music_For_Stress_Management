@@ -1,9 +1,8 @@
 import SwiftUI
 import Combine
 
-/// Breathe is driven solely by the user's live BPM. The audio can still use its
-/// therapeutic SUNO bucket, but neither waveform peaks nor song changes affect
-/// the circle's phase. Its cadence is 5 × log₂(user BPM).
+/// Breathe is driven solely by the user's live BPM. Neither waveform peaks nor
+/// music selection affect the circle's phase. Its cadence is 5 × log₂(user BPM).
 @MainActor
 final class BreatheController: ObservableObject {
 
@@ -20,7 +19,6 @@ final class BreatheController: ObservableObject {
     private let engine: PersonalizeEngine
     private var timer: AnyCancellable?
     private var bpmObserver: AnyCancellable?
-    private var songTarget: Int? = nil
     private var cycleStart = Date()
 
     init(hub: SignalHub, suno: SunoPlayer, engine: PersonalizeEngine) {
@@ -45,7 +43,6 @@ final class BreatheController: ObservableObject {
     func stop() {
         active = false
         timer?.cancel(); timer = nil
-        suno.bucketOverride = nil
         circleBPM = nil
     }
 
@@ -54,19 +51,6 @@ final class BreatheController: ObservableObject {
         let bpm = hub.bpm ?? 60
         guard bpm.isFinite, bpm > 0 else { return }
         userBPM = bpm
-
-        // The SUNO song stays on its therapeutic lower bucket. This is separate
-        // from the circle's live-BPM formula.
-        let raw = Int(bpm / 10) * 10 - 10
-        let target = max(hub.baselineBucket, min(150, max(60, raw)))
-        if force || target != songTarget {
-            songTarget = target
-            suno.bucketOverride = target                   // the song maps to that BPM folder
-            if !suno.playing {
-                engine.claimAudio(.suno)
-                suno.switchSong(to: target)
-            }
-        }
 
         let nextCircleBPM = 5 * log2(bpm)
         if force || buffering || nextCircleBPM != circleBPM {

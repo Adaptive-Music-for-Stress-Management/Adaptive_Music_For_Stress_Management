@@ -2,8 +2,8 @@ import Foundation
 import AVFoundation
 import Combine
 
-/// SUNO AI library player.
-///   bucket = clamp((BPM // 10) * 10 - 10, 60, 150)  -> BPM_folder/<bucket>/song_*.mp3
+/// SUNO AI library player. The stress label selects the BPM-folder range:
+/// calm 120...150, mild-stress 90...120, stressed 60...90.
 ///   random song per bucket, no repeats until the whole folder (cycle of 3) has played,
 ///   fade OUT - fade IN on every switch, and an AVAudioEngine tap for the waveform visualizer.
 final class SunoPlayer: NSObject, ObservableObject {
@@ -13,7 +13,6 @@ final class SunoPlayer: NSObject, ObservableObject {
     @Published var bucket: Int? = nil               // bucket of the audible song
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
-    @Published var bucketOverride: Int? = nil       // Breathe forces the target bucket
 
     /// Most recent waveform samples for the visualizer.
     private(set) var waveform: [Float] = Array(repeating: 0, count: 256)
@@ -30,6 +29,8 @@ final class SunoPlayer: NSObject, ObservableObject {
     private var switching = false
     private var playedPerBucket: [Int: Set<String>] = [:]
     private var ticker: AnyCancellable?
+    private var stressLabelSeen: StressLabel?
+    private var selectedStressBucket: Int?
 
     private var activeNode: AVAudioPlayerNode { activeIsA ? nodeA : nodeB }
     private var activeFile: AVAudioFile? { activeIsA ? fileA : fileB }
@@ -104,14 +105,38 @@ final class SunoPlayer: NSObject, ObservableObject {
         return pick
     }
 
-    // MARK: - target following
+    // MARK: - stress-label target following
+
+    private static func buckets(for label: StressLabel) -> [Int] {
+        switch label {
+        case .calm: return [120, 130, 140, 150]
+        case .mild: return [90, 100, 110, 120]
+        case .stressed: return [60, 70, 80, 90]
+        }
+    }
+
+    /// Picks a new BPM folder only when the stress label changes. Live BPM is
+    /// deliberately not consulted here: it drives the breathing circle alone.
+    private func updateStressBucketIfNeeded() {
+        let label = hub.stressLabel ?? .mild
+        guard label != stressLabelSeen || selectedStressBucket == nil else { return }
+
+        stressLabelSeen = label
+        let target = Self.buckets(for: label).randomElement()!
+        selectedStressBucket = target
+
+        if playing, !switching, let current = bucket, current != target {
+            switchSong(to: target)
+        }
+    }
 
     var targetBucket: Int {
-        if let o = bucketOverride { return o }
-        return hub.bucket ?? bucket ?? 60
+        updateStressBucketIfNeeded()
+        return selectedStressBucket ?? 90
     }
 
     private func tick() {
+        updateStressBucketIfNeeded()
         // timeline
         if let file = activeFile, playing {
             duration = Double(file.length) / file.processingFormat.sampleRate
@@ -121,10 +146,6 @@ final class SunoPlayer: NSObject, ObservableObject {
             if duration > 0, currentTime >= duration - 0.3, !switching {   // song over -> next in bucket
                 switchSong(to: targetBucket)
             }
-        }
-        // follow the live BPM bucket (or the Breathe override) with a fade-out / fade-in
-        if playing, !switching, let cur = self.bucket, targetBucket != cur {
-            switchSong(to: targetBucket)
         }
     }
 
