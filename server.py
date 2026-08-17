@@ -505,6 +505,7 @@ def _new_session():
     return {"key": "", "model": None,
             "mode": None, "value": "", "history": set(), "karaoke_tried": set(),
             "seed_artist": None,      # resolved artist for Song mode follow-up suggestions
+            "playlist_id": None,      # stable selection from the playlist picker
             "playlist": None,           # {"id","name","tracks":[track...],"index":int}
             "access": None, "refresh": None, "exp": 0.0, "state": None,
             "product": None}
@@ -598,6 +599,17 @@ def sp_token_ep(request: Request):
     return _with_cookie(JSONResponse({"access_token": _sp_token(s)}), sid)
 
 
+@app.get("/api/playlists")
+def api_playlists(request: Request):
+    """List every playlist available to the connected Spotify account."""
+    sid, s = _session(request)
+    if not s.get("access"):
+        return _with_cookie(JSONResponse({"ok": False, "error": "not_connected"}, status_code=401), sid)
+    if s.get("product") != "premium":
+        return _with_cookie(JSONResponse({"ok": False, "error": "not_premium"}, status_code=403), sid)
+    return _with_cookie(JSONResponse({"ok": True, "playlists": _playlist_catalog(s)}), sid)
+
+
 @app.get("/login")
 def sp_login(request: Request):
     sid, s = _session(request)
@@ -649,27 +661,34 @@ def _current_label():
     with HUB.lock:
         return _stress_label(HUB.stress) or "Mild-stress"
 
-def _load_playlist(s, name):
-    """Find a playlist anywhere in the user's Spotify library and load it.
-
-    Spotify returns only 50 playlists per page. Previously a playlist beyond
-    that first page was reported as missing even though it existed.
-    """
-    target, fuzzy, name_l = None, None, name.strip().casefold()
+def _playlist_catalog(s):
+    """Return every playlist in the user's library, following Spotify pages."""
+    playlists, seen = [], set()
     page = _sp_get(s, "/me/playlists", {"limit": 50}) or {}
     while page:
         for p in page.get("items", []) or []:
-            p_name = (p.get("name") or "").strip()
-            if p_name.casefold() == name_l:
-                target = p
-                break
-            if fuzzy is None and name_l and name_l in p_name.casefold():
-                fuzzy = p
-        if target is not None:
-            break
+            playlist_id = p.get("id")
+            if not playlist_id or playlist_id in seen:
+                continue
+            seen.add(playlist_id)
+            playlists.append({
+                "id": playlist_id,
+                "name": (p.get("name") or "Untitled playlist").strip(),
+                "track_count": (p.get("tracks") or {}).get("total", 0),
+            })
         next_page = page.get("next")
         page = _sp_get(s, next_page) if next_page else None
-    target = target or fuzzy
+    return playlists
+
+
+def _load_playlist(s, name="", playlist_id=None):
+    """Load a selected playlist by stable ID, with name matching as a fallback."""
+    catalog = _playlist_catalog(s)
+    target = next((p for p in catalog if playlist_id and p["id"] == playlist_id), None)
+    if target is None:
+        name_l = (name or "").strip().casefold()
+        target = next((p for p in catalog if p["name"].casefold() == name_l), None)
+        target = target or next((p for p in catalog if name_l and name_l in p["name"].casefold()), None)
     if target is None:
         return None
     tracks, url_path = [], f"/playlists/{target['id']}/tracks"
@@ -705,7 +724,7 @@ def _matches_personalization(mode, value, track, artist=None):
 @app.post("/api/personalize")
 async def api_personalize(request: Request):
     """Resolve the next track for the chosen mode.
-       body: {mode: vibe|artist|playlist|song, value, direction: init|next|prev}"""
+       body: {mode: vibe|artist|playlist|song, value, playlist_id?, direction: init|next|prev}"""
     sid, s = _session(request)
     try:
         body = await request.json()
@@ -713,6 +732,7 @@ async def api_personalize(request: Request):
         body = {}
     mode = (body.get("mode") or "").strip().lower()
     value = (body.get("value") if body.get("value") is not None else s.get("value") or "").strip()
+    playlist_id = (body.get("playlist_id") or s.get("playlist_id") or "").strip()
     direction = (body.get("direction") or "init").strip().lower()
     if mode not in ("vibe", "artist", "playlist", "song"):
         return _with_cookie(JSONResponse({"ok": False, "error": "bad mode"}, status_code=400), sid)
@@ -723,11 +743,13 @@ async def api_personalize(request: Request):
     if s.get("product") != "premium":
         return _with_cookie(JSONResponse({"ok": False, "error": "not_premium"}), sid)
 
-    if mode != s.get("mode") or (value and value != s.get("value")):
+    playlist_changed = mode == "playlist" and playlist_id != (s.get("playlist_id") or "")
+    if mode != s.get("mode") or (value and value != s.get("value")) or playlist_changed:
         s["history"] = set(); s["karaoke_tried"] = set()
         s["playlist"] = None
         s["seed_artist"] = None
     s["mode"], s["value"] = mode, value or s.get("value", "")
+    s["playlist_id"] = playlist_id if mode == "playlist" else None
 
     # all the network work (Spotify, Claude) is blocking I/O — run it in the
     # threadpool so the event loop keeps serving the 10 Hz /ws stream
@@ -738,7 +760,7 @@ async def api_personalize(request: Request):
                 if s["playlist"] is None:
                     if not value:
                         return {"ok": False, "error": "no_value"}
-                    pl = _load_playlist(s, value)
+                    pl = _load_playlist(s, value, s.get("playlist_id"))
                     if pl is None:
                         return {"ok": False, "error": "playlist_not_found"}
                     s["playlist"] = pl
@@ -755,7 +777,7 @@ async def api_personalize(request: Request):
                     pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
                 tr = pl["tracks"][pl["index"]]
                 return {"ok": True, "track": tr, "mode": mode,
-                        "playlist": {"name": pl["name"], "index": pl["index"],
+                        "playlist": {"id": pl["id"], "name": pl["name"], "index": pl["index"],
                                      "count": len(pl["tracks"])}}
 
             if mode == "song" and direction == "init":
@@ -800,7 +822,7 @@ async def api_personalize(request: Request):
 @app.post("/api/karaoke")
 async def api_karaoke(request: Request):
     """Fetch an instrumental + lyrics package.
-       body: {current: {name, artist, duration_ms} | null, mode?, value?}
+       body: {current: {name, artist, duration_ms} | null, mode?, value?, playlist_id?, direction?}
        mode/value (when sent) update the session first — a category chosen WHILE
        karaoke is open must reach the server too."""
     sid, s = _session(request)
@@ -810,13 +832,17 @@ async def api_karaoke(request: Request):
         body = {}
     b_mode = (body.get("mode") or "").strip().lower()
     b_value = (body.get("value") or "").strip()
+    b_playlist_id = (body.get("playlist_id") or "").strip()
+    direction = (body.get("direction") or "init").strip().lower()
     if b_mode in ("vibe", "artist", "playlist", "song"):
-        if b_mode != s.get("mode") or (b_value and b_value != s.get("value")):
+        playlist_changed = b_mode == "playlist" and b_playlist_id != (s.get("playlist_id") or "")
+        if b_mode != s.get("mode") or (b_value and b_value != s.get("value")) or playlist_changed:
             s["history"] = set(); s["karaoke_tried"] = set(); s["playlist"] = None
             s["seed_artist"] = None
         s["mode"] = b_mode
         if b_value:
             s["value"] = b_value
+        s["playlist_id"] = b_playlist_id if b_mode == "playlist" else None
     if not (s["key"] and s["access"]):
         return _with_cookie(JSONResponse({"ok": False, "error": "not_initialized"}), sid)
     if not s.get("mode"):
@@ -842,13 +868,24 @@ async def api_karaoke(request: Request):
             if mode == "playlist":
                 pl = s.get("playlist")
                 if not pl:
-                    pl = _load_playlist(s, s.get("value", ""))
+                    pl = _load_playlist(s, s.get("value", ""), s.get("playlist_id"))
                     if pl is None:
                         return {"ok": False, "error": "playlist"}
                     s["playlist"] = pl
-                order = pl["tracks"][pl["index"]:] + pl["tracks"][:pl["index"]]
+                if direction == "stress":
+                    idx = claude_music.pick_playlist_track_index(
+                        pl["tracks"], _current_label(), api_key=s["key"], model=s["model"])
+                    if idx is None:
+                        return {"ok": False, "error": "playlist"}
+                    pl["index"] = idx
+                elif direction == "next":
+                    pl["index"] = (pl["index"] + 1) % len(pl["tracks"])
+                elif direction == "prev":
+                    pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
+                order = list(range(pl["index"], len(pl["tracks"]))) + list(range(pl["index"]))
                 attempted = False
-                for tr in order[:25]:
+                for index in order[:25]:
+                    tr = pl["tracks"][index]
                     key = _track_key(tr)
                     if key in s["karaoke_tried"]:
                         continue
@@ -857,7 +894,10 @@ async def api_karaoke(request: Request):
                     pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
                                                        api_key=s["key"], model=s["model"], user_token=tok)
                     if pkg:
+                        pl["index"] = index
                         pkg["original"] = tr
+                        pkg["playlist"] = {"id": pl["id"], "name": pl["name"], "index": index,
+                                           "count": len(pl["tracks"])}
                         return {"ok": True, **pkg}
                 if not attempted:                     # whole window already tried -> let a retry start over
                     s["karaoke_tried"] = set()

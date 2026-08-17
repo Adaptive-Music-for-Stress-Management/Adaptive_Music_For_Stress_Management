@@ -107,7 +107,7 @@ async function adaptSpotifyToStress(s) {
   if (stressAdaptInFlight || !spMode || !spTrack || audioSource !== "spotify") return;
   stressAdaptInFlight = true;
   try {
-    if (karaokeActive) await fetchKaraoke(null, false);
+    if (karaokeActive) await fetchKaraoke(null, false, "stress");
     else await spRequestTrack("stress");
   } finally {
     stressAdaptInFlight = false;
@@ -359,6 +359,7 @@ let spPlayer = null, spDeviceId = null, spConnected = false, spPremium = false, 
 let spMode = null, spValue = "", spTrack = null, spIsPlaying = false;
 let spLastPos = 0, spDuration = 0, spDragging = false;
 let stressLabelSeen = null, stressAdaptInFlight = false;
+let spPlaylistId = null, playlistCatalog = null, playlistLoading = null;
 
 async function spToken() {
   try { return (await (await fetch("/api/spotify/token")).json()).access_token; } catch(e){ return null; }
@@ -378,6 +379,7 @@ async function refreshSpotify() {
   const full = spKeySet && spConnected && spPremium;
   $("spFull").hidden = !full;
   $("spSetup").hidden = full;
+  if (!full) { playlistCatalog = null; spPlaylistId = null; }
   if (spConnected) maybeInitSpotify();
 }
 $("antConfirm").addEventListener("click", async () => {
@@ -422,11 +424,14 @@ document.querySelectorAll(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
     tabMode = tab.dataset.mode;
     document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t === tab));
-    $("tabMenu").hidden = false;
+    const isPlaylist = tabMode === "playlist";
+    $("tabMenu").hidden = isPlaylist;
+    $("playlistMenu").hidden = !isPlaylist;
     $("prefInput").placeholder = TAB_PLACEHOLDER[tabMode];
     $("prefInput").value = "";
     clearPrefLoading();
-    $("prefInput").focus();
+    if (isPlaylist) loadPlaylistPicker();
+    else $("prefInput").focus();
   });
 });
 $("prefConfirm").addEventListener("click", confirmPref);
@@ -434,7 +439,7 @@ $("prefInput").addEventListener("keydown", e => { if (e.key === "Enter") confirm
 
 async function confirmPref() {
   const value = $("prefInput").value.trim();
-  if (!value || !tabMode) return;
+  if (!value || !tabMode || tabMode === "playlist") return;
   spMode = tabMode; spValue = value;
   setPrefLoading(tabMode === "playlist" ? "loading your playlist…" : "asking Claude…");
   if (karaokeActive) { fetchKaraoke(null); return; }     // in karaoke mode the choice feeds karaoke
@@ -456,13 +461,72 @@ function clearPrefLoading() {
     msg.className = "setup-msg mono";
   }, 260);
 }
+async function loadPlaylistPicker() {
+  if (playlistLoading) return playlistLoading;
+  if (playlistCatalog) { renderPlaylistPicker(); return; }
+  const list = $("playlistList");
+  list.innerHTML = '<div class="setup-msg mono loading"><span class="spin"></span>loading your playlists…</div>';
+  playlistLoading = (async () => {
+    try {
+      const r = await fetch("/api/playlists");
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "playlist lookup failed");
+      playlistCatalog = j.playlists || [];
+      renderPlaylistPicker();
+    } catch(e) {
+      list.textContent = "Couldn't load your playlists. Reconnect Spotify and try again.";
+      list.className = "playlist-list setup-msg mono err";
+    } finally {
+      playlistLoading = null;
+    }
+  })();
+  return playlistLoading;
+}
+function renderPlaylistPicker() {
+  const list = $("playlistList");
+  list.className = "playlist-list";
+  list.textContent = "";
+  if (!playlistCatalog || !playlistCatalog.length) {
+    list.textContent = "No playlists were found in this Spotify account.";
+    list.classList.add("setup-msg", "mono");
+    return;
+  }
+  for (const playlist of playlistCatalog) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "playlist-choice";
+    btn.dataset.playlistId = playlist.id;
+    btn.classList.toggle("on", playlist.id === spPlaylistId);
+    const title = document.createElement("span");
+    title.textContent = playlist.name;
+    const count = document.createElement("small");
+    count.textContent = (playlist.track_count || 0) + " tracks";
+    btn.append(title, count);
+    btn.addEventListener("click", () => choosePlaylist(playlist));
+    list.appendChild(btn);
+  }
+}
+function markPlaylistSelected(playlistId) {
+  document.querySelectorAll(".playlist-choice").forEach(btn =>
+    btn.classList.toggle("on", btn.dataset.playlistId === playlistId));
+}
+async function choosePlaylist(playlist) {
+  spMode = "playlist";
+  spValue = playlist.name;
+  spPlaylistId = playlist.id;
+  markPlaylistSelected(playlist.id);
+  setPrefLoading("loading selected playlist…");
+  if (karaokeActive) { fetchKaraoke(null); return; }
+  await spRequestTrack("init");
+}
 async function spRequestTrack(direction) {
   if (direction !== "init") {
     setPrefLoading(direction === "stress" ? "adapting to your current stress level…" : "asking Claude…");
   }
   try {
     const r = await fetch("/api/personalize", {method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({mode: spMode, value: spValue, direction})});
+        body: JSON.stringify({mode: spMode, value: spValue,
+                              playlist_id: spMode === "playlist" ? spPlaylistId : null, direction})});
     const j = await r.json();
     if (!j.ok) {
       const errs = {
@@ -480,6 +544,7 @@ async function spRequestTrack(direction) {
     if (j.playlist) $("spModeSub").textContent =
         `playlist · ${j.playlist.name} · ${j.playlist.index + 1}/${j.playlist.count}`;
     else $("spModeSub").textContent = spMode + " · " + spValue;
+    if (j.playlist && j.playlist.id) markPlaylistSelected(j.playlist.id);
     const started = await spPlayTrack(j.track);
     if (started) clearPrefLoading();
     return started;
@@ -554,7 +619,7 @@ $("spNextBtn").addEventListener("click", () => spSkip("next"));
 $("spPrevBtn").addEventListener("click", () => spSkip("prev"));
 function spSkip(direction) {
   if (!spMode) return;
-  if (karaokeActive) fetchKaraoke(null);          // karaoke loop: next song with lyrics + instrumental
+  if (karaokeActive) fetchKaraoke(null, false, direction); // karaoke loop: follow the selected playlist too
   else spRequestTrack(direction);                 // re-prompt Claude / walk the playlist
 }
 
@@ -641,7 +706,7 @@ async function currentSpotifyPlayback() {
   } catch(e) {}
   return {positionMs: 0, wasPlaying: spIsPlaying};
 }
-async function fetchKaraoke(current, preservePlayback = false) {
+async function fetchKaraoke(current, preservePlayback = false, direction = "init") {
   if (karaokeFetching) return;
   karaokeFetching = true;
   kShow("karaokeLoading");
@@ -650,7 +715,9 @@ async function fetchKaraoke(current, preservePlayback = false) {
     // send the chosen category along: the server session is the source of truth for
     // mode/value, and a choice made WHILE karaoke is open must reach it too
     const r = await fetch("/api/karaoke", {method:"POST", headers:{"Content-Type":"application/json"},
-                                           body: JSON.stringify({current, mode: spMode, value: spValue})});
+                                           body: JSON.stringify({current, mode: spMode, value: spValue,
+                                                                 playlist_id: spMode === "playlist" ? spPlaylistId : null,
+                                                                 direction})});
     j = await r.json();
   } catch(e){}
   try {
@@ -675,7 +742,15 @@ async function fetchKaraoke(current, preservePlayback = false) {
       positionMs: playback.positionMs,
       autoplay: playback.wasPlaying,
     });
-    if (started) $("spModeSub").textContent = "karaoke · " + (j.source ? j.source.name : "");
+    if (started) {
+      if (j.playlist) {
+        markPlaylistSelected(j.playlist.id);
+        $("spModeSub").textContent =
+          `karaoke · playlist · ${j.playlist.name} · ${j.playlist.index + 1}/${j.playlist.count}`;
+      } else {
+        $("spModeSub").textContent = "karaoke · " + (j.source ? j.source.name : "");
+      }
+    }
   } finally {
     karaokeFetching = false;
     clearPrefLoading();

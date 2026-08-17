@@ -207,6 +207,17 @@ input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.25)}
 .tab:hover{color:var(--ink)}
 .tab.on{border-color:var(--accent);color:var(--accent)}
 .tab-menu{display:flex;gap:8px;margin-top:10px;animation:fadein .35s ease}
+.playlist-menu{margin-top:10px;animation:fadein .35s ease}
+.playlist-hint{font-size:10px;letter-spacing:.05em;color:var(--muted);margin:0 0 7px 1px}
+.playlist-list{display:grid;grid-template-columns:1fr;gap:6px;max-height:185px;overflow-y:auto;padding-right:2px}
+.playlist-list::-webkit-scrollbar{width:5px}
+.playlist-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+.playlist-choice{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
+                 padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);
+                 color:var(--ink);font:500 12px/1.25 var(--sans);text-align:left;cursor:pointer;transition:all .2s ease}
+.playlist-choice:hover,.playlist-choice.on{border-color:var(--spotify);background:rgba(29,185,84,.08)}
+.playlist-choice.on{box-shadow:0 0 14px rgba(29,185,84,.12)}
+.playlist-choice small{flex:0 0 auto;color:var(--muted);font:10px var(--mono);white-space:nowrap}
 @keyframes fadein{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 
 /* fade utility used by JS transitions */

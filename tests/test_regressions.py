@@ -61,12 +61,33 @@ class PlaylistTests(unittest.TestCase):
             self.fail(f"unexpected Spotify path: {path}")
 
         with patch.object(server, "_sp_get", side_effect=fake_sp_get):
-            playlist = server._load_playlist({"access": "token", "exp": float("inf")}, "focus mix")
+            playlist = server._load_playlist(
+                {"access": "token", "exp": float("inf")}, "Focus Mix", playlist_id="later")
 
         self.assertEqual(playlist["id"], "later")
         self.assertEqual(playlist["name"], "Focus Mix")
         self.assertEqual(len(playlist["tracks"]), 1)
         self.assertIn((next_page, None), calls)
+
+    def test_playlist_catalog_exposes_button_ready_metadata_for_every_page(self):
+        next_page = "https://api.spotify.com/v1/me/playlists?offset=50&limit=50"
+
+        def fake_sp_get(_session, path, params=None):
+            if path == "/me/playlists":
+                return {"items": [{"id": "first", "name": "Morning", "tracks": {"total": 14}}],
+                        "next": next_page}
+            if path == next_page:
+                return {"items": [{"id": "later", "name": "Evening", "tracks": {"total": 22}}],
+                        "next": None}
+            self.fail(f"unexpected Spotify path: {path}")
+
+        with patch.object(server, "_sp_get", side_effect=fake_sp_get):
+            catalog = server._playlist_catalog({"access": "token", "exp": float("inf")})
+
+        self.assertEqual(catalog, [
+            {"id": "first", "name": "Morning", "track_count": 14},
+            {"id": "later", "name": "Evening", "track_count": 22},
+        ])
 
     def test_claude_playlist_choice_is_limited_to_presented_tracks(self):
         tracks = [{"name": "Quiet Song", "artist": "Calm Artist"},
