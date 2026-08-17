@@ -1,19 +1,15 @@
 import SwiftUI
 import Combine
 
-/// Breathe: an expanding / contracting circle locked to the actual beats of the
-/// SUNO song. The target tempo is ((BPM // 10) * 10) - 10 — one folder below the
-/// user's current bucket — and the song is switched to that folder. Beats are found
-/// by watching the live waveform for amplitude spikes (the engine tap's RMS energy);
-/// the moment a spike lands, the circle snaps to expand. As the user's heart slows,
-/// the target re-computes until it reaches the baseline.
+/// Breathe is driven solely by the user's live BPM. Neither waveform peaks nor
+/// music selection affect the circle's phase. Its cadence is 5 × log₂(user BPM).
 @MainActor
 final class BreatheController: ObservableObject {
 
     @Published var active = false
     @Published var buffering = true
-    @Published var expanded = false
-    @Published var targetBucket: Int? = nil
+    @Published var circleBPM: Double? = nil
+    @Published var userBPM: Double? = nil
     @Published var blocked = false                       // Spotify is the audio source
 
     static let blockedMessage = "I apologize, but you must enable the AI-generated songs to use the breathe feature"
@@ -22,23 +18,23 @@ final class BreatheController: ObservableObject {
     private let suno: SunoPlayer
     private let engine: PersonalizeEngine
     private var timer: AnyCancellable?
-    private var energyHistory: [Float] = []
-    private var lastBeat = Date.distantPast
-    private var contractWork: DispatchWorkItem?
+    private var bpmObserver: AnyCancellable?
+    private var cycleStart = Date()
 
     init(hub: SignalHub, suno: SunoPlayer, engine: PersonalizeEngine) {
         self.hub = hub; self.suno = suno; self.engine = engine
-        suno.onSongChange = { [weak self] in               // every song change: wait for the next beat
-            Task { @MainActor in self?.buffering = true }
-        }
+        bpmObserver = hub.$bpm
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.retarget(force: false) }
     }
 
     func start() {
         active = true
-        buffering = true
         blocked = engine.audioSource == .spotify
         if !blocked {
             retarget(force: true)     // never touch Spotify playback — blocked mode shows the message
+        } else {
+            buffering = true
         }
         timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.tick() }
@@ -47,65 +43,59 @@ final class BreatheController: ObservableObject {
     func stop() {
         active = false
         timer?.cancel(); timer = nil
-        suno.bucketOverride = nil
-        contractWork?.cancel()
+        circleBPM = nil
     }
 
     private func retarget(force: Bool) {
-        // ((BPM // 10) * 10) - 10, clamped to the library and never below the baseline
+        guard active else { return }
         let bpm = hub.bpm ?? 60
-        let raw = Int(bpm / 10) * 10 - 10
-        let target = max(hub.baselineBucket, min(150, max(60, raw)))
-        if force || target != targetBucket {
-            targetBucket = target
-            suno.bucketOverride = target                   // the song maps to that BPM folder
-            buffering = true
-            if !suno.playing {
-                engine.claimAudio(.suno)
-                suno.switchSong(to: target)
+        guard bpm.isFinite, bpm > 0 else { return }
+        userBPM = bpm
+
+        let nextCircleBPM = 5 * log2(bpm)
+        if force || buffering || nextCircleBPM != circleBPM {
+            let now = Date()
+            if let oldCircleBPM = circleBPM, oldCircleBPM > 0 {
+                let oldCycle = 60.0 / oldCircleBPM
+                let phase = now.timeIntervalSince(cycleStart)
+                    .truncatingRemainder(dividingBy: oldCycle) / oldCycle
+                cycleStart = now.addingTimeInterval(-phase * (60.0 / nextCircleBPM))
+            } else {
+                cycleStart = now
             }
+            circleBPM = nextCircleBPM
+            buffering = false
         }
     }
 
     private func tick() {
         guard active else { return }
         let nowBlocked = engine.audioSource == .spotify
-        if nowBlocked { blocked = true; return }
-        if blocked {                                       // user just enabled the AI songs
-            blocked = false
-            retarget(force: true)
+        if nowBlocked {
+            blocked = true
+            buffering = true
+            return
         }
-        retarget(force: false)                             // re-calculate as BPM comes down
-
-        // --- amplitude-spike beat detection over the engine tap's RMS energy ---
-        let energy = suno.currentEnergy
-        energyHistory.append(energy)
-        if energyHistory.count > 22 { energyHistory.removeFirst() }   // ~0.7 s at 30 Hz
-        guard suno.playing, energyHistory.count > 6 else { return }
-        let avg = energyHistory.reduce(0, +) / Float(energyHistory.count)
-        let interval = 60.0 / Double(targetBucket ?? 60)
-        if energy > max(0.02, avg * 1.35), Date().timeIntervalSince(lastBeat) > interval * 0.55 {
-            lastBeat = Date()
-            onBeat(interval: interval)
-        }
+        let resumed = blocked
+        blocked = false
+        retarget(force: resumed)                           // run after every live BPM update
     }
 
-    private func onBeat(interval: Double) {
-        if buffering { buffering = false }
-        contractWork?.cancel()
-        withAnimation(.easeOut(duration: 0.13)) { expanded = true }     // expand ON the spike
-        let work = DispatchWorkItem { [weak self] in
-            withAnimation(.easeIn(duration: interval * 0.8)) { self?.expanded = false }
-        }
-        contractWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    /// A cosine yields equal contraction and expansion phases: full expansion
+    /// at circle-BPM ticks and full contraction halfway between them.
+    func scale(at date: Date) -> CGFloat {
+        guard active, !buffering, let circleBPM, circleBPM > 0 else { return 0.55 }
+        let cycle = 60.0 / circleBPM
+        let phase = date.timeIntervalSince(cycleStart)
+            .truncatingRemainder(dividingBy: cycle) / cycle
+        let amount = (1 + cos(2 * .pi * phase)) / 2
+        return 0.55 + 0.45 * amount
     }
 }
 
 struct BreatheView: View {
     @EnvironmentObject var breathe: BreatheController
     @EnvironmentObject var suno: SunoPlayer
-    @EnvironmentObject var hub: SignalHub
 
     var body: some View {
         Group {
@@ -120,23 +110,25 @@ struct BreatheView: View {
                 }
             } else {
                 VStack(spacing: 8) {
-                    Text(breathe.buffering ? "BUFFERING · WAITING FOR THE BEAT…" : "BREATHE WITH THE CIRCLE")
+                    Text(breathe.buffering ? "BUFFERING · READING YOUR BPM…" : "BREATHE WITH THE CIRCLE")
                         .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                         .tracking(1.5)
                         .foregroundStyle(Theme.muted)
-                    Circle()
-                        .fill(RadialGradient(colors: [Theme.accent.opacity(0.9), Theme.accent.opacity(0.25)],
-                                             center: .init(x: 0.38, y: 0.38),
-                                             startRadius: 4, endRadius: 90))
-                        .shadow(color: Theme.accent.opacity(0.4), radius: 26)
-                        .scaleEffect(breathe.expanded ? 1.0 : 0.55)
-                        .opacity(breathe.buffering ? 0.35 : 1)
-                        .frame(width: 150, height: 150)
-                        .frame(maxHeight: .infinity)
+                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                        Circle()
+                            .fill(RadialGradient(colors: [Theme.accent.opacity(0.9), Theme.accent.opacity(0.25)],
+                                                 center: .init(x: 0.38, y: 0.38),
+                                                 startRadius: 4, endRadius: 90))
+                            .shadow(color: Theme.accent.opacity(0.4), radius: 26)
+                            .scaleEffect(breathe.scale(at: timeline.date))
+                            .opacity(breathe.buffering ? 0.35 : 1)
+                            .frame(width: 150, height: 150)
+                            .frame(maxHeight: .infinity)
+                    }
                     WaveformView()
                         .frame(height: 38)
-                    if let t = breathe.targetBucket {
-                        Text("target \(t) BPM · baseline \(hub.baselineBucket) BPM")
+                    if let circleBPM = breathe.circleBPM, let userBPM = breathe.userBPM {
+                        Text("circle \(circleBPM, specifier: "%.1f") BPM · user \(userBPM, specifier: "%.1f") BPM")
                             .font(.system(size: 9.5, design: .monospaced))
                             .foregroundStyle(Theme.faint)
                     }

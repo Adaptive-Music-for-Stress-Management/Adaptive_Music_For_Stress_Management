@@ -161,10 +161,10 @@ final class SignalHub: ObservableObject {
         stressLabel = StressLabel.from(stress!)
     }
 
-    /// BPM bucket for the SUNO library: clamp((bpm // 10) * 10, 60, 150).
+    /// BPM bucket for the SUNO library: clamp((bpm // 10) * 10 - 10, 60, 150).
     var bucket: Int? {
         guard let bpm, beatFresh else { return nil }
-        return min(150, max(60, Int(bpm / 10) * 10))
+        return min(150, max(60, Int(bpm / 10) * 10 - 10))
     }
 
     var baselineBucket: Int {

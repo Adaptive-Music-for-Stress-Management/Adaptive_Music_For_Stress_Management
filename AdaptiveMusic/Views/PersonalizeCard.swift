@@ -152,6 +152,11 @@ struct PersonalizeCard: View {
                     Button(mode.rawValue) {
                         withAnimation { tab = mode }
                         prefField = ""
+                        if mode == .playlist {
+                            Task { await engine.loadPlaylists() }
+                        } else {
+                            engine.beginNewTextPreference()
+                        }
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .frame(maxWidth: .infinity)
@@ -164,31 +169,39 @@ struct PersonalizeCard: View {
             }
 
             if let tab {
-                HStack(spacing: 8) {
-                    TextField(tab.placeholder, text: $prefField)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12.5))
-                        .padding(10)
-                        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
-                        .autocorrectionDisabled()
-                    Button("Confirm") {
-                        let v = prefField.trimmingCharacters(in: .whitespaces)
-                        guard !v.isEmpty else { return }
-                        Task { await engine.confirm(mode: tab, value: v) }
+                if tab == .playlist {
+                    playlistPicker
+                } else {
+                    HStack(spacing: 8) {
+                        TextField(tab.placeholder, text: $prefField)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                            .padding(10)
+                            .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
+                            .autocorrectionDisabled()
+                            .onChange(of: prefField) { _, _ in
+                                engine.beginNewTextPreference()
+                            }
+                        Button("Confirm") {
+                            let v = prefField.trimmingCharacters(in: .whitespaces)
+                            guard !v.isEmpty else { return }
+                            Task { await engine.confirm(mode: tab, value: v) }
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
+                    .transition(.opacity)
                 }
-                .transition(.opacity)
             }
 
-            if engine.busy {
+            if engine.busy && engine.mode != .playlist {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("asking Claude…")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Theme.muted)
                 }
+                .transition(.opacity)
             }
             if let msg = engine.message {
                 Text(msg)
@@ -197,6 +210,56 @@ struct PersonalizeCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .animation(.easeOut(duration: 0.25), value: engine.busy)
+    }
+
+    private var playlistPicker: some View {
+        Group {
+            if engine.playlistsLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("loading your playlists…")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.muted)
+                }
+            } else if engine.playlists.isEmpty {
+                Text("No playlists were found in this Spotify account.")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(engine.playlists) { playlist in
+                            Button {
+                                Task { await engine.selectPlaylist(playlist) }
+                            } label: {
+                                Text(playlist.name)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(Theme.ink)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 9)
+                                    .background(
+                                        engine.selectedPlaylistID == playlist.id
+                                            ? Theme.spotifyGreen.opacity(0.10)
+                                            : Theme.panel2,
+                                        in: RoundedRectangle(cornerRadius: 8)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(engine.selectedPlaylistID == playlist.id
+                                                    ? Theme.spotifyGreen : Theme.line)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 185)
+            }
+        }
+        .transition(.opacity)
     }
 
     // MARK: - shared bits

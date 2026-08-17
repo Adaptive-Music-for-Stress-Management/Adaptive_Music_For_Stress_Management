@@ -29,6 +29,7 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
     }
 
     func start() {
+        resetDetector()
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self else { return }
             DispatchQueue.main.async { self.permissionDenied = !granted }
@@ -73,6 +74,18 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
             }
             session.stopRunning()
             DispatchQueue.main.async { self.running = false }
+        }
+    }
+
+    /// A new calibration/session must not inherit a stale threshold or peak from
+    /// the prior fingertip-reading session.
+    func resetDetector() {
+        queue.async { [self] in
+            dc = nil
+            env = 1.0
+            prev = 0
+            above = false
+            lastPeak = 0
         }
     }
 

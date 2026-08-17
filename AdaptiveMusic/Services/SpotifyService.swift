@@ -20,6 +20,26 @@ struct SpotifyTrack: Identifiable, Equatable {
     }
 }
 
+struct SpotifyPlaylist: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let trackCount: Int
+
+    static func from(json value: [String: Any]) -> SpotifyPlaylist? {
+        guard let id = value["id"] as? String else { return nil }
+        let rawName = (value["name"] as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let count = ((value["tracks"] as? [String: Any])?["total"] as? Int) ?? 0
+        return SpotifyPlaylist(id: id, name: rawName.isEmpty ? "Untitled playlist" : rawName,
+                               trackCount: max(0, count))
+    }
+}
+
+struct PlaylistTrackCandidate {
+    let position: Int
+    let track: SpotifyTrack
+}
+
 /// Spotify via the Web API only — Authorization-Code-with-PKCE sign-in (no client secret
 /// on the device) and playback controlled on the user's own Spotify app through the
 /// Connect endpoints. Premium is required for playback control, matching the spec.
@@ -188,10 +208,11 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
         return nil
     }
 
-    func play(uri: String, deviceID: String?) async -> Bool {
+    func play(uri: String, deviceID: String?, positionMs: Int = 0) async -> Bool {
         var q: [String: String] = [:]
         if let deviceID { q["device_id"] = deviceID }
-        let (code, _) = await api("PUT", "/me/player/play", query: q, body: ["uris": [uri]])
+        let body: [String: Any] = ["uris": [uri], "position_ms": max(0, positionMs)]
+        let (code, _) = await api("PUT", "/me/player/play", query: q, body: body)
         return (200...299).contains(code)
     }
 
@@ -224,28 +245,61 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
         return nil
     }
 
-    /// Find the named playlist in the user's library and return its playable tracks.
-    func playlistTracks(named name: String) async -> (name: String, tracks: [SpotifyTrack])? {
-        let (_, j) = await api("GET", "/me/playlists", query: ["limit": "50"])
-        let items = j?["items"] as? [[String: Any]] ?? []
-        let lower = name.lowercased().trimmingCharacters(in: .whitespaces)
-        let hit = items.first { (($0["name"] as? String) ?? "").lowercased() == lower }
-               ?? items.first { (($0["name"] as? String) ?? "").lowercased().contains(lower) }
-        guard let hit, let id = hit["id"] as? String else { return nil }
-        var tracks: [SpotifyTrack] = []
+    /// Fetch playlist names and stable IDs for the picker. Only playlist metadata
+    /// is paged here; no playlist track collection is downloaded.
+    func playlists() async -> [SpotifyPlaylist] {
+        let limit = 50
         var offset = 0
-        while tracks.count < 300 {
-            let (_, page) = await api("GET", "/playlists/\(id)/tracks",
-                                      query: ["limit": "100", "offset": String(offset)])
+        var result: [SpotifyPlaylist] = []
+        var seen: Set<String> = []
+        while true {
+            let (_, page) = await api("GET", "/me/playlists",
+                                      query: ["limit": String(limit), "offset": String(offset)])
             let rows = page?["items"] as? [[String: Any]] ?? []
             for row in rows {
-                if let t = row["track"] as? [String: Any], (t["is_local"] as? Bool) != true,
-                   let track = SpotifyTrack.from(json: t) { tracks.append(track) }
+                guard let playlist = SpotifyPlaylist.from(json: row), seen.insert(playlist.id).inserted else {
+                    continue
+                }
+                result.append(playlist)
             }
-            if rows.count < 100 { break }
-            offset += 100
+            guard rows.count == limit else { break }
+            offset += rows.count
         }
-        return tracks.isEmpty ? nil : ((hit["name"] as? String) ?? name, tracks)
+        return result
+    }
+
+    /// Fetch exactly the requested zero-based playlist position for sequential
+    /// previous/next playback.
+    func playlistTrack(playlistID: String, at position: Int) async -> SpotifyTrack? {
+        guard position >= 0 else { return nil }
+        let (_, page) = await api("GET", "/playlists/\(playlistID)/tracks",
+                                  query: ["limit": "1", "offset": String(position)])
+        let rows = page?["items"] as? [[String: Any]] ?? []
+        for row in rows {
+            guard let value = row["track"] as? [String: Any],
+                  (value["is_local"] as? Bool) != true,
+                  let track = SpotifyTrack.from(json: value) else { continue }
+            return track
+        }
+        return nil
+    }
+
+    /// A bounded real-track sample for stress adaptation. This is the only time
+    /// Claude sees playlist songs, and it never requires materialising the list.
+    func playlistStressCandidates(playlistID: String, count: Int, around position: Int,
+                                  maximum: Int = 25) async -> [PlaylistTrackCandidate] {
+        guard count > 0 else { return [] }
+        let limit = min(maximum, count)
+        let offset = max(0, min(position - limit / 2, count - limit))
+        let (_, page) = await api("GET", "/playlists/\(playlistID)/tracks",
+                                  query: ["limit": String(limit), "offset": String(offset)])
+        let rows = page?["items"] as? [[String: Any]] ?? []
+        return rows.enumerated().compactMap { relativePosition, row in
+            guard let value = row["track"] as? [String: Any],
+                  (value["is_local"] as? Bool) != true,
+                  let track = SpotifyTrack.from(json: value) else { return nil }
+            return PlaylistTrackCandidate(position: offset + relativePosition, track: track)
+        }
     }
 
     // MARK: - helpers
