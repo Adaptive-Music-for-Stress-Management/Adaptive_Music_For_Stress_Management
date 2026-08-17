@@ -160,7 +160,10 @@ final class SunoPlayer: NSObject, ObservableObject {
     }
 
     func play() {
-        if activeFile == nil { switchSong(to: targetBucket); return }
+        let target = targetBucket
+        // If the label changed while paused, begin with its newly selected
+        // stress folder rather than resuming the prior label's song.
+        if activeFile == nil || bucket != target { switchSong(to: target); return }
         playing = true
         startNode(activeNode)
         ramp(node: activeNode, to: 1.0, over: 0.7)
