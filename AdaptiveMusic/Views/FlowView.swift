@@ -59,7 +59,7 @@ struct FlowView: View {
 
     private var cameraStep: some View {
         VStack(spacing: 14) {
-            Text("Cover the back camera **and** flash with your fingertip.\nThe flashlight turns on and reads your pulse.")
+            Text("Cover the rear lens with your fingertip while the flashlight shines beside it.\nOn a three-lens iPhone, use the single lens on the right.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Theme.muted)
             if camera.permissionDenied {

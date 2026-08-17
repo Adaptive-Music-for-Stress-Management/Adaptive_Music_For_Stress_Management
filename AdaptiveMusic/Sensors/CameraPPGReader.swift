@@ -70,8 +70,7 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         session.sessionPreset = .medium
 
         if !configured {
-            guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                        for: .video, position: .back) else {
+            guard let camera = fingertipCamera() else {
                 session.commitConfiguration()
                 publishError("This device does not have a rear camera for fingertip pulse reading.")
                 return
@@ -108,6 +107,24 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         // Starting the session can reset the torch and capture settings.
         guard enableTorchAndAutoCapture(on: device) else { return }
         publishRunning(true)
+    }
+
+    /// On a three-camera iPhone, the setup shown in the app's instructions
+    /// places the fingertip over the single upper-right lens. That is the
+    /// physical telephoto camera, so do not allow a virtual multi-camera
+    /// device to silently switch us to a different lens. Phones without that
+    /// lens use their rear 1× wide camera instead.
+    private func fingertipCamera() -> AVCaptureDevice? {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInTelephotoCamera, .builtInWideAngleCamera],
+            mediaType: .video,
+            position: .back
+        )
+        return discovery.devices.first(where: {
+            $0.deviceType == .builtInTelephotoCamera && $0.isTorchAvailable
+        }) ?? discovery.devices.first(where: {
+            $0.deviceType == .builtInWideAngleCamera && $0.isTorchAvailable
+        }) ?? discovery.devices.first
     }
 
     /// Uses the strongest currently safe torch level, but preserves the camera's
