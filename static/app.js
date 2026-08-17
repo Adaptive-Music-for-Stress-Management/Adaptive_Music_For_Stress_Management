@@ -14,9 +14,6 @@ const fmtTime = s => {
   const m = Math.floor(s / 60), ss = Math.floor(s % 60);
   return String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
 };
-// Music and breathing start one ten-BPM bucket below the current heart rate.
-const bucketOf = bpm => clamp(Math.floor(bpm / 10) * 10 - 10, 60, 150);
-
 /* ============================ 1 · setup flow ============================ */
 const screens = {};
 document.querySelectorAll(".screen").forEach(s => screens[s.id] = s);
@@ -62,6 +59,8 @@ async function answerStressed(stressed) {
   try { await fetch("/api/baseline", {method:"POST", headers:{"Content-Type":"application/json"},
                                       body: JSON.stringify({stressed})}); } catch(e){}
   stressLabelSeen = null;
+  sunoStressLabel = null;
+  sunoStressBucket = null;
   const flow = $("flow");
   flow.classList.add("fade-out");
   setTimeout(() => { flow.hidden = true; }, 450);
@@ -251,8 +250,13 @@ function claimAudio(src) {
 const sunoEls = [$("audioA"), $("audioB")];
 let sunoIdx = 0, sunoPlaying = false, sunoFetching = false;
 let sunoBucket = null;                 // bucket of the audible song
-let sunoOverride = null;               // breathe mode forces a target bucket
+let sunoStressLabel = null, sunoStressBucket = null;
 const SUNO_VOL = 0.9, FADE_MS = 1100;
+const SUNO_STRESS_FOLDERS = Object.freeze({
+  "Calm": [120, 130, 140, 150],
+  "Mild-stress": [90, 100, 110, 120],
+  "Stressed": [60, 70, 80, 90],
+});
 sunoEls.forEach(el => { el.volume = 0; });
 
 function fadeEl(el, to, ms) {
@@ -281,7 +285,7 @@ async function sunoLoad(bucket, autoplay) {
   sunoFetching = true;
   try {
     const cur = sunoEls[sunoIdx];
-    const q = bucket != null ? "bucket=" + bucket : (S && S.bpm ? "bpm=" + S.bpm : "bpm=60");
+    const q = "bucket=" + (bucket != null ? bucket : sunoTargetBucket());
     const j = await (await fetch("/api/suno/next?" + q +
               "&current=" + encodeURIComponent($("sunoName").textContent || ""))).json();
     if (!j || !j.url) { sunoFetching = false; return; }
@@ -299,16 +303,25 @@ async function sunoLoad(bucket, autoplay) {
     }
   } finally { sunoFetching = false; }
 }
-function sunoTargetBucket() {
-  if (sunoOverride != null) return sunoOverride;
-  if (S && S.bucket) return S.bucket;
-  return sunoBucket || 60;
+
+// Choose a fresh BPM folder only for a new stress label. A temporary missing
+// sensor value keeps the existing selection instead of causing a song switch.
+function updateSunoStressBucket(label) {
+  const effectiveLabel = label || sunoStressLabel || "Mild-stress";
+  if (effectiveLabel === sunoStressLabel && sunoStressBucket != null) return false;
+  const folders = SUNO_STRESS_FOLDERS[effectiveLabel] || SUNO_STRESS_FOLDERS["Mild-stress"];
+  sunoStressLabel = effectiveLabel;
+  sunoStressBucket = folders[Math.floor(Math.random() * folders.length)];
+  return true;
 }
-function sunoTick() {
-  // follow the live BPM bucket (or breathe override) with a fade-out / fade-in switch
+function sunoTargetBucket() {
+  updateSunoStressBucket(S && S.stress_label);
+  return sunoStressBucket || 90;
+}
+function sunoTick(s) {
   if (!sunoPlaying || sunoFetching || audioSource !== "suno") return;
-  const target = sunoTargetBucket();
-  if (target && sunoBucket != null && target !== sunoBucket) sunoLoad(target);
+  if (!updateSunoStressBucket(s.stress_label)) return;
+  if (sunoBucket != null && sunoBucket !== sunoStressBucket) sunoLoad(sunoStressBucket);
 }
 $("sunoPlay").addEventListener("click", async () => {
   claimAudio("suno");
@@ -319,7 +332,8 @@ $("sunoPlay").addEventListener("click", async () => {
     await fadeEl(el, 0, 500);
     try { el.pause(); } catch(e){}
   } else {
-    if (!el.src) { await sunoLoad(sunoTargetBucket(), true); return; }
+    const target = sunoTargetBucket();
+    if (!el.src || sunoBucket !== target) { await sunoLoad(target, true); return; }
     sunoPlaying = true;
     $("sunoPlay").innerHTML = "&#10074;&#10074;";
     try { await el.play(); } catch(e){}
@@ -819,7 +833,7 @@ function syncLyrics(posMs) {
 }
 
 /* ============================ 10 · breathe ============================ */
-let breatheOn = false, breatheBuffering = true, breatheSongTarget = null;
+let breatheOn = false, breatheBuffering = true;
 let audioCtx = null, analyser = null, waveData = null, breatheRAF = 0;
 let breatheCircleBpm = null, breatheCycleStart = 0;
 const BMSG = "I apologize, but you must enable the AI-generated songs to use the breathe feature";
@@ -856,34 +870,15 @@ function enterBreathe() {
 function exitBreathe() {
   if (!breatheOn) return;
   breatheOn = false;
-  sunoOverride = null;
   cancelAnimationFrame(breatheRAF); breatheRAF = 0;
   breatheCircleBpm = null;
   breatheCycleStart = 0;
   $("breatheLoading").hidden = true;
   $("bCircle").classList.remove("buffering");
 }
-function baselineBucket() {
-  // The target may begin one bucket below the live BPM, but it must not guide
-  // someone below their measured baseline. Round up to the nearest playable
-  // ten-BPM value to honour that safety floor.
-  return (S && S.baseline && S.baseline.bpm)
-    ? clamp(Math.ceil(S.baseline.bpm / 10) * 10, 60, 150)
-    : 60;
-}
 function breatheRetarget(force) {
   const userBpm = Number((S && S.bpm) || 60);
   if (!Number.isFinite(userBpm) || userBpm <= 0) return;
-
-  // The song can still use its therapeutic BPM bucket, but the visual is
-  // deliberately independent: it follows only the user's live BPM.
-  const songTarget = Math.max(
-    baselineBucket(), clamp(Math.floor(userBpm / 10) * 10 - 10, 60, 150));
-  if (songTarget !== breatheSongTarget || force) {
-    breatheSongTarget = songTarget;
-    sunoOverride = songTarget;
-    if (!sunoPlaying || sunoBucket !== songTarget) { claimAudio("suno"); sunoLoad(songTarget, true); }
-  }
 
   // circle_BPM = 5 × log₂(user_BPM). Preserve the current cycle phase when
   // BPM changes so the new value takes effect immediately without a visual jump.

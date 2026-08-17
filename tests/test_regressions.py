@@ -26,13 +26,12 @@ def spotify_track(name="Quiet Song", artist="Calm Artist"):
     }
 
 
-class BucketTests(unittest.TestCase):
-    def test_live_bpm_uses_the_next_lower_ten_bpm_bucket(self):
-        self.assertEqual(server._bucket_of(60), 60)
-        self.assertEqual(server._bucket_of(70), 60)
-        self.assertEqual(server._bucket_of(89.9), 70)
-        self.assertEqual(server._bucket_of(150), 140)
-        self.assertEqual(server._bucket_of(160), 150)
+class StressFolderTests(unittest.TestCase):
+    def test_stress_labels_map_to_their_bpm_folders(self):
+        self.assertEqual(server._bpm_folders_for_stress_label("Calm"), (120, 130, 140, 150))
+        self.assertEqual(server._bpm_folders_for_stress_label("Mild-stress"), (90, 100, 110, 120))
+        self.assertEqual(server._bpm_folders_for_stress_label("Stressed"), (60, 70, 80, 90))
+        self.assertEqual(server._bpm_folders_for_stress_label(None), (90, 100, 110, 120))
 
     def test_ppg_reset_discards_a_peak_from_the_prior_session(self):
         detector = server.PPGDetector()

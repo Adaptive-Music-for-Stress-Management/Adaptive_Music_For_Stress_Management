@@ -415,6 +415,7 @@ def snapshot():
         elif calibrating:
             cal_left = BASELINE_SEC
         stress = round(HUB.stress, 1) if (HUB.stress is not None and not calibrating) else None
+        stress_label = _stress_label(stress)
         return {
             "input": HUB.input,
             "bpm": round(HUB.bpm, 1) if beats_fresh else None,
@@ -422,11 +423,11 @@ def snapshot():
             "beat_seq": HUB.beat_seq,
             "eeg": eeg_out, "eeg_active": eeg_active,
             "stress": stress,
-            "stress_label": _stress_label(stress),
+            "stress_label": stress_label,
             "calibrating": calibrating,
             "calibration_left": None if cal_left is None else round(cal_left, 1),
             "baseline": HUB.baseline,
-            "bucket": None if not beats_fresh else _bucket_of(HUB.bpm),
+            "bpm_folders": _bpm_folders_for_stress_label(stress_label),
             "muse_streaming": (now - HUB.osc_last_ts) < 5.0,
             "session_sec": int(now - HUB.session_t0),
         }
@@ -444,19 +445,26 @@ async def ws(sock: WebSocket):
 
 
 # ---------------------------------------------------------------------------
-# SUNO AI library — BPM buckets with a no-repeat cycle per folder.
+# SUNO AI library — stress-driven BPM folders with a no-repeat cycle per folder.
 # ---------------------------------------------------------------------------
 PLAYED = {}                    # bucket -> set(filenames served this cycle)
 PLAYED_LOCK = threading.Lock()
 
-def _bucket_of(bpm):
-    """Return the calming song/circle bucket for a live heart rate.
+STRESS_BPM_FOLDERS = {
+    "Calm": (120, 130, 140, 150),
+    "Mild-stress": (90, 100, 110, 120),
+    "Stressed": (60, 70, 80, 90),
+}
 
-    The intervention intentionally starts one ten-BPM step below the listener's
-    current bucket. Values outside the available 60…150 BPM library clamp to
-    the nearest playable folder.
-    """
-    return max(60, min(150, int(bpm // 10) * 10 - 10))
+
+def _bpm_folders_for_stress_label(label):
+    """Playable folders for a stress label; unknown values use mild-stress."""
+    return STRESS_BPM_FOLDERS.get(label, STRESS_BPM_FOLDERS["Mild-stress"])
+
+
+def _bucket_for_stress_label(label):
+    """Pick a folder in the label's therapeutic range, never from live BPM."""
+    return random.choice(_bpm_folders_for_stress_label(label))
 
 def _tracks_in(bucket):
     folder = os.path.join(MUSIC_DIR, str(bucket))
@@ -467,16 +475,14 @@ def _tracks_in(bucket):
     return sorted(out)
 
 @app.get("/api/suno/next")
-def api_suno_next(bpm: float = None, bucket: int = None, current: str = ""):
-    """Next SUNO song for the given BPM (or explicit bucket, used by Breathe).
+def api_suno_next(bucket: int = None, stress_label: str = None, current: str = ""):
+    """Next SUNO song for a stress-selected BPM folder.
     Never repeats a song until the whole folder (cycle of 3) has been played."""
     if bucket is None:
-        if bpm is None:
+        if stress_label is None:
             with HUB.lock:
-                bpm = HUB.bpm
-        if bpm is None:
-            bpm = 60.0
-        bucket = _bucket_of(bpm)
+                stress_label = _stress_label(HUB.stress)
+        bucket = _bucket_for_stress_label(stress_label)
     bucket = max(60, min(150, int(bucket // 10) * 10))
     files = _tracks_in(bucket)
     if not files:
