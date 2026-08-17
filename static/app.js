@@ -234,16 +234,23 @@ function updateMeter(s) {
 
 /* ============================ 5 · audio source arbiter ============================ */
 let audioSource = "suno";              // "suno" | "spotify" — which system owns the speakers
-function claimAudio(src) {
-  if (audioSource === src) return;
+let audioHandoffId = 0, sunoLoadRequestId = 0, spotifyPlayRequestId = 0;
+function ownsAudioHandoff(id, source) {
+  return id === audioHandoffId && audioSource === source;
+}
+async function claimAudio(src) {
+  if (audioSource === src) return true;
+  const handoffId = ++audioHandoffId;
   audioSource = src;
-  if (src === "spotify") sunoFadeStop();
-  else if (spPlayer) {
-    spPlayer.pause().catch(()=>{});
-    spIsPlaying = false;
-    const b = $("spPlayBtn"); if (b) b.innerHTML = "&#9654;";
-  }
   breatheSourceCheck();
+  if (src === "spotify") {
+    sunoLoadRequestId += 1;
+    await sunoFadeStop(handoffId);
+  } else {
+    spotifyPlayRequestId += 1;
+    await spotifyFadeStop(handoffId);
+  }
+  return ownsAudioHandoff(handoffId, src);
 }
 
 /* ============================ 6 · SUNO player ============================ */
@@ -263,25 +270,37 @@ function fadeEl(el, to, ms) {
   // interval + wall-clock (not rAF): fades must finish even in a backgrounded tab,
   // otherwise bucket switches stall while the music tab is hidden
   return new Promise(res => {
-    if (el._fade) clearInterval(el._fade);
+    if (el._fade) {
+      clearInterval(el._fade.timer);
+      el._fade.resolve(false);
+    }
     const from = el.volume, t0 = performance.now();
-    if (ms <= 0) { el.volume = clamp(to, 0, 1); res(); return; }
-    el._fade = setInterval(() => {
+    if (ms <= 0) { el.volume = clamp(to, 0, 1); res(true); return; }
+    const fade = {timer: null, resolve: res};
+    el._fade = fade;
+    fade.timer = setInterval(() => {
       const k = Math.min(1, (performance.now() - t0) / ms);
       el.volume = clamp(from + (to - from) * k, 0, 1);
-      if (k >= 1) { clearInterval(el._fade); el._fade = null; res(); }
+      if (k >= 1) {
+        clearInterval(fade.timer);
+        if (el._fade === fade) el._fade = null;
+        res(true);
+      }
     }, 40);
   });
 }
-async function sunoFadeStop() {
+async function sunoFadeStop(handoffId) {
   const el = sunoEls[sunoIdx];
-  await fadeEl(el, 0, 600);
+  if (!await fadeEl(el, 0, 600)) return false;
+  if (handoffId != null && !ownsAudioHandoff(handoffId, "spotify")) return false;
   try { el.pause(); } catch(e){}
   sunoPlaying = false;
   $("sunoPlay").innerHTML = "&#9654;";
+  return true;
 }
 async function sunoLoad(bucket, autoplay) {
   if (sunoFetching) return;
+  const requestId = ++sunoLoadRequestId;
   sunoFetching = true;
   try {
     const cur = sunoEls[sunoIdx];
@@ -289,8 +308,13 @@ async function sunoLoad(bucket, autoplay) {
     const j = await (await fetch("/api/suno/next?" + q +
               "&current=" + encodeURIComponent($("sunoName").textContent || ""))).json();
     if (!j || !j.url) { sunoFetching = false; return; }
+    if (requestId !== sunoLoadRequestId || audioSource !== "suno") return;
     // fade OUT the old song fully, then fade IN the new one (spec: fade out - fade in)
-    if (!cur.paused) { await fadeEl(cur, 0, FADE_MS); try { cur.pause(); } catch(e){} }
+    if (!cur.paused) {
+      if (!await fadeEl(cur, 0, FADE_MS)) return;
+      if (requestId !== sunoLoadRequestId || audioSource !== "suno") return;
+      try { cur.pause(); } catch(e){}
+    }
     sunoIdx ^= 1;
     const nxt = sunoEls[sunoIdx];
     nxt.src = j.url; nxt.volume = 0;
@@ -298,6 +322,7 @@ async function sunoLoad(bucket, autoplay) {
     $("sunoBucket").textContent = j.bucket + " BPM folder";
     sunoBucket = j.bucket;
     if (autoplay || sunoPlaying) {
+      if (requestId !== sunoLoadRequestId || audioSource !== "suno") return;
       try { await nxt.play(); sunoPlaying = true; $("sunoPlay").innerHTML = "&#10074;&#10074;"; } catch(e){}
       await fadeEl(nxt, SUNO_VOL, FADE_MS);
     }
@@ -324,14 +349,14 @@ function sunoTick(s) {
   if (sunoBucket != null && sunoBucket !== sunoStressBucket) sunoLoad(sunoStressBucket);
 }
 $("sunoPlay").addEventListener("click", async () => {
-  claimAudio("suno");
   const el = sunoEls[sunoIdx];
-  if (sunoPlaying) {
+  if (sunoPlaying && audioSource === "suno") {
     sunoPlaying = false;
     $("sunoPlay").innerHTML = "&#9654;";
-    await fadeEl(el, 0, 500);
+    if (!await fadeEl(el, 0, 500)) return;
     try { el.pause(); } catch(e){}
   } else {
+    if (!await claimAudio("suno")) return;
     const target = sunoTargetBucket();
     if (!el.src || sunoBucket !== target) { await sunoLoad(target, true); return; }
     sunoPlaying = true;
@@ -340,8 +365,14 @@ $("sunoPlay").addEventListener("click", async () => {
     fadeEl(el, SUNO_VOL, 700);
   }
 });
-$("sunoNext").addEventListener("click", () => { claimAudio("suno"); sunoPlaying = true; sunoLoad(sunoTargetBucket(), true); });
-$("sunoPrev").addEventListener("click", () => { claimAudio("suno"); sunoPlaying = true; sunoLoad(sunoTargetBucket(), true); });
+$("sunoNext").addEventListener("click", async () => {
+  if (!await claimAudio("suno")) return;
+  sunoPlaying = true; await sunoLoad(sunoTargetBucket(), true);
+});
+$("sunoPrev").addEventListener("click", async () => {
+  if (!await claimAudio("suno")) return;
+  sunoPlaying = true; await sunoLoad(sunoTargetBucket(), true);
+});
 sunoEls.forEach(el => {
   el.addEventListener("ended", () => { if (el === sunoEls[sunoIdx] && sunoPlaying) sunoLoad(sunoTargetBucket(), true); });
   el.addEventListener("timeupdate", () => {
@@ -594,9 +625,14 @@ async function spRequestTrack(direction) {
   }
 }
 async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
-  claimAudio("spotify");
+  const requestId = ++spotifyPlayRequestId;
+  if (!await claimAudio("spotify") || requestId !== spotifyPlayRequestId || audioSource !== "spotify") {
+    return false;
+  }
   await maybeInitSpotify();
+  if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
   if (!spDeviceId) await new Promise(r => setTimeout(r, 800));
+  if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
   if (!spDeviceId) {
     $("prefMsg").textContent = "Spotify player not ready yet — try again in a moment.";
     $("prefMsg").className = "setup-msg mono err";
@@ -605,12 +641,17 @@ async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
   const tok = await spToken();
   try {
     if (spTrack && spPlayer) await spFade(0, 500);                    // fade out old
+    if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
     const safePosition = Math.max(0, Math.min(Math.round(positionMs || 0), Math.max(0, (track.duration_ms || 0) - 250)));
     const response = await fetch("https://api.spotify.com/v1/me/player/play?device_id=" + spDeviceId, {
       method: "PUT", headers: {Authorization: "Bearer " + tok, "Content-Type": "application/json"},
       body: JSON.stringify({uris: [track.uri], position_ms: safePosition}),
     });
     if (!response.ok) throw new Error("Spotify playback request failed (" + response.status + ")");
+    if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") {
+      if (spPlayer) await spPlayer.pause().catch(()=>{});
+      return false;
+    }
     spTrack = track;
     spDuration = track.duration_ms || 0;
     $("spTrackName").textContent = track.name + " — " + (track.artist || "");
@@ -639,20 +680,51 @@ async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
     return false;
   }
 }
+let spFadeId = 0;
 async function spFade(to, ms) {
-  if (!spPlayer) return;
+  if (!spPlayer) return false;
+  const fadeId = ++spFadeId;
   let from = to > 0 ? 0 : 0.9;
   try { const st = await spPlayer.getVolume(); if (isFinite(st)) from = st; } catch(e){}
   const steps = 12, dt = Math.max(20, ms / steps);
   for (let i = 1; i <= steps; i++) {
+    if (fadeId !== spFadeId) return false;
     try { await spPlayer.setVolume(clamp(from + (to - from) * i / steps, 0, 1)); } catch(e){}
     await new Promise(r => setTimeout(r, dt));
   }
+  return fadeId === spFadeId;
+}
+async function spotifyFadeStop(handoffId) {
+  if (!spPlayer) {
+    if (handoffId != null && !ownsAudioHandoff(handoffId, "suno")) return false;
+    spIsPlaying = false;
+    return true;
+  }
+  const faded = await spFade(0, 500);
+  if (!faded || (handoffId != null && !ownsAudioHandoff(handoffId, "suno"))) return false;
+  await spPlayer.pause().catch(()=>{});
+  if (handoffId != null && !ownsAudioHandoff(handoffId, "suno")) return false;
+  spIsPlaying = false;
+  $("spPlayBtn").innerHTML = "&#9654;";
+  return true;
 }
 $("spPlayBtn").addEventListener("click", async () => {
   if (!spPlayer) return;
-  if (spIsPlaying) { await spPlayer.pause().catch(()=>{}); spIsPlaying = false; $("spPlayBtn").innerHTML = "&#9654;"; }
-  else { claimAudio("spotify"); await spPlayer.resume().catch(()=>{}); spIsPlaying = true; $("spPlayBtn").innerHTML = "&#10074;&#10074;"; }
+  if (spIsPlaying && audioSource === "spotify") {
+    const handoffId = ++audioHandoffId;
+    await spotifyFadeStop(handoffId);
+    return;
+  }
+  const requestId = ++spotifyPlayRequestId;
+  if (!await claimAudio("spotify") || requestId !== spotifyPlayRequestId || audioSource !== "spotify") return;
+  await spPlayer.resume().catch(()=>{});
+  if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") {
+    await spPlayer.pause().catch(()=>{});
+    return;
+  }
+  spIsPlaying = true;
+  $("spPlayBtn").innerHTML = "&#10074;&#10074;";
+  spFade(0.9, 700);
 });
 $("spNextBtn").addEventListener("click", () => spSkip("next"));
 $("spPrevBtn").addEventListener("click", () => spSkip("prev"));
