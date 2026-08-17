@@ -2,7 +2,7 @@ import SwiftUI
 import Combine
 
 /// Breathe is driven solely by the user's live BPM. Neither waveform peaks nor
-/// music selection affect the circle's phase. Its cadence is 5 × log₂(user BPM).
+/// music selection affect the circle's phase. Its cadence is 5 × log₁₀(user BPM).
 @MainActor
 final class BreatheController: ObservableObject {
 
@@ -52,7 +52,7 @@ final class BreatheController: ObservableObject {
         guard bpm.isFinite, bpm > 0 else { return }
         userBPM = bpm
 
-        let nextCircleBPM = 5 * log2(bpm)
+        let nextCircleBPM = 5 * log10(bpm)
         if force || buffering || nextCircleBPM != circleBPM {
             let now = Date()
             if let oldCircleBPM = circleBPM, oldCircleBPM > 0 {
