@@ -46,28 +46,45 @@ class BucketTests(unittest.TestCase):
 
 
 class PlaylistTests(unittest.TestCase):
-    def test_playlist_lookup_follows_pages_before_reporting_not_found(self):
+    def test_playlist_selection_follows_pages_without_loading_any_tracks(self):
         next_page = "https://api.spotify.com/v1/me/playlists?offset=50&limit=50"
         calls = []
 
         def fake_sp_get(_session, path, params=None):
             calls.append((path, params))
             if path == "/me/playlists":
-                return {"items": [{"id": "first", "name": "Earlier list"}], "next": next_page}
+                return {"items": [{"id": "first", "name": "Earlier list", "tracks": {"total": 2}}],
+                        "next": next_page}
             if path == next_page:
-                return {"items": [{"id": "later", "name": "Focus Mix"}], "next": None}
-            if path == "/playlists/later/tracks":
-                return {"items": [{"track": spotify_track()}], "next": None}
+                return {"items": [{"id": "later", "name": "Focus Mix", "tracks": {"total": 3}}],
+                        "next": None}
             self.fail(f"unexpected Spotify path: {path}")
 
         with patch.object(server, "_sp_get", side_effect=fake_sp_get):
-            playlist = server._load_playlist(
+            playlist = server._select_playlist(
                 {"access": "token", "exp": float("inf")}, "Focus Mix", playlist_id="later")
 
         self.assertEqual(playlist["id"], "later")
         self.assertEqual(playlist["name"], "Focus Mix")
-        self.assertEqual(len(playlist["tracks"]), 1)
+        self.assertEqual(playlist["count"], 3)
         self.assertIn((next_page, None), calls)
+        self.assertFalse(any(path == "/playlists/later/tracks" for path, _ in calls))
+
+    def test_sequential_playlist_request_fetches_only_the_requested_position(self):
+        calls = []
+
+        def fake_sp_get(_session, path, params=None):
+            calls.append((path, params))
+            self.assertEqual(path, "/playlists/focus/tracks")
+            self.assertEqual(params, {"limit": 1, "offset": 2})
+            return {"items": [{"track": spotify_track("Third Song")}]}
+
+        playlist = {"id": "focus", "name": "Focus", "count": 5, "index": 2}
+        with patch.object(server, "_sp_get", side_effect=fake_sp_get):
+            track = server._playlist_track_at({"access": "token", "exp": float("inf")}, playlist, 2)
+
+        self.assertEqual(track["name"], "Third Song")
+        self.assertEqual(len(calls), 1)
 
     def test_playlist_catalog_exposes_button_ready_metadata_for_every_page(self):
         next_page = "https://api.spotify.com/v1/me/playlists?offset=50&limit=50"
@@ -96,6 +113,18 @@ class PlaylistTests(unittest.TestCase):
             self.assertEqual(claude_music.pick_playlist_track_index(tracks, "Stressed", api_key="test"), 1)
         with patch.object(claude_music, "_complete", return_value='{"index": 99}'):
             self.assertIsNone(claude_music.pick_playlist_track_index(tracks, "Stressed", api_key="test"))
+
+    def test_claude_stress_choice_returns_only_an_actual_playlist_position(self):
+        candidates = [
+            {"position": 12, "track": {"name": "Quiet Song", "artist": "Calm Artist"}},
+            {"position": 37, "track": {"name": "Brighter Song", "artist": "Calm Artist"}},
+        ]
+        with patch.object(claude_music, "_complete", return_value='{"index": 37}'):
+            self.assertEqual(
+                claude_music.pick_playlist_track_position(candidates, "Stressed", api_key="test"), 37)
+        with patch.object(claude_music, "_complete", return_value='{"index": 20}'):
+            self.assertIsNone(
+                claude_music.pick_playlist_track_position(candidates, "Stressed", api_key="test"))
 
 
 class PersonalizationGuardTests(unittest.TestCase):

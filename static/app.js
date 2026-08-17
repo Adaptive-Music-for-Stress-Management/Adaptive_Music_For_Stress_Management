@@ -499,9 +499,7 @@ function renderPlaylistPicker() {
     btn.classList.toggle("on", playlist.id === spPlaylistId);
     const title = document.createElement("span");
     title.textContent = playlist.name;
-    const count = document.createElement("small");
-    count.textContent = (playlist.track_count || 0) + " tracks";
-    btn.append(title, count);
+    btn.append(title);
     btn.addEventListener("click", () => choosePlaylist(playlist));
     list.appendChild(btn);
   }
@@ -534,6 +532,8 @@ async function spRequestTrack(direction) {
         not_connected: "Connect Spotify first.",
         not_premium: "I apologize, but you need Spotify premium to access this feature.",
         playlist_not_found: "Couldn't find a playlist with that name in your library.",
+        playlist_empty: "That playlist has no playable songs.",
+        playlist_track_unavailable: "That playlist song is unavailable to play.",
         playlist_selection_failed: "Couldn't choose a suitable song from that playlist — try again.",
         not_found: "Couldn't find a matching song — try different wording.",
       };

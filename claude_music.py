@@ -240,33 +240,39 @@ def resolve_one(mode, value, stress_label, exclude_names, api_key=None, model=No
     return fallback           # everything already played -> allow a repeat rather than silence
 
 
-def pick_playlist_track_index(tracks, stress_label, api_key=None, model=None):
-    """Choose a stress-appropriate track from the user's *actual* playlist.
+def pick_playlist_track_position(candidates, stress_label, api_key=None, model=None):
+    """Ask Claude to select only from Spotify playlist entries supplied by the server.
 
-    The server already read the playlist with the user's Spotify token. Claude
-    only ranks those candidates, so it cannot hallucinate a track outside the
-    playlist. For very large playlists, present an evenly distributed subset to
-    keep the request responsive while preserving choices across the collection.
+    Each candidate contains its actual zero-based Spotify playlist position and
+    one already-fetched track. The caller deliberately supplies a small window;
+    Claude therefore cannot invent a song or cause a whole playlist download.
     """
-    if not tracks:
+    if not candidates:
         return None
-    max_candidates = 100
-    if len(tracks) <= max_candidates:
-        choices = list(enumerate(tracks))
-    else:
-        step = (len(tracks) - 1) / (max_candidates - 1)
-        choices = [(round(i * step), tracks[round(i * step)]) for i in range(max_candidates)]
+    choices = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            position = int(candidate.get("position"))
+        except (TypeError, ValueError):
+            continue
+        track = candidate.get("track") or {}
+        if track:
+            choices.append((position, track))
+    if not choices:
+        return None
     listing = "\n".join(
-        f'{index}: {track.get("artist", "Unknown artist")} — {track.get("name", "Untitled")}'
-        for index, track in choices
+        f'{position}: {track.get("artist", "Unknown artist")} — {track.get("name", "Untitled")}'
+        for position, track in choices
     )
     goal = STRESS_GOAL.get(stress_label, STRESS_GOAL["Mild-stress"])
     ask = (
         f"The listener's stress level is {stress_label}. The therapeutic goal is to {goal}.\n"
         "Choose the one most suitable song from this exact Spotify playlist. "
-        "You may choose ONLY one listed index.\n"
+        "You may choose ONLY one listed playlist position.\n"
         f"{listing}\n"
-        'Answer ONLY JSON: {"index": <listed index>}'
+        'Answer ONLY JSON: {"index": <listed playlist position>}'
     )
     try:
         data = _parse_json(_complete(ask, api_key=api_key, model=model, max_tokens=60))
@@ -275,6 +281,13 @@ def pick_playlist_track_index(tracks, stress_label, api_key=None, model=None):
     except Exception as e:
         print(f"[playlist] Claude ranking failed: {e}", file=sys.stderr)
         return None
+
+
+def pick_playlist_track_index(tracks, stress_label, api_key=None, model=None):
+    """Compatibility wrapper for callers that hold a simple, local track list."""
+    return pick_playlist_track_position(
+        [{"position": index, "track": track} for index, track in enumerate(tracks or [])],
+        stress_label, api_key=api_key, model=model)
 
 
 # ------------------- karaoke: instrumental + lyrics -------------------

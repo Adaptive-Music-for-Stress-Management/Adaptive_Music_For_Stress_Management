@@ -506,7 +506,7 @@ def _new_session():
             "mode": None, "value": "", "history": set(), "karaoke_tried": set(),
             "seed_artist": None,      # resolved artist for Song mode follow-up suggestions
             "playlist_id": None,      # stable selection from the playlist picker
-            "playlist": None,           # {"id","name","tracks":[track...],"index":int}
+            "playlist": None,         # {"id", "name", "count", "index"}; tracks stay in Spotify
             "access": None, "refresh": None, "exp": 0.0, "state": None,
             "product": None}
 
@@ -607,7 +607,10 @@ def api_playlists(request: Request):
         return _with_cookie(JSONResponse({"ok": False, "error": "not_connected"}, status_code=401), sid)
     if s.get("product") != "premium":
         return _with_cookie(JSONResponse({"ok": False, "error": "not_premium"}, status_code=403), sid)
-    return _with_cookie(JSONResponse({"ok": True, "playlists": _playlist_catalog(s)}), sid)
+    # A picker only needs stable IDs and names. In particular, do not imply that
+    # the playlist's contents have been read just to show the picker.
+    playlists = [{"id": p["id"], "name": p["name"]} for p in _playlist_catalog(s)]
+    return _with_cookie(JSONResponse({"ok": True, "playlists": playlists}), sid)
 
 
 @app.get("/login")
@@ -681,8 +684,8 @@ def _playlist_catalog(s):
     return playlists
 
 
-def _load_playlist(s, name="", playlist_id=None):
-    """Load a selected playlist by stable ID, with name matching as a fallback."""
+def _select_playlist(s, name="", playlist_id=None):
+    """Remember playlist metadata without fetching its track collection."""
     catalog = _playlist_catalog(s)
     target = next((p for p in catalog if playlist_id and p["id"] == playlist_id), None)
     if target is None:
@@ -691,20 +694,67 @@ def _load_playlist(s, name="", playlist_id=None):
         target = target or next((p for p in catalog if name_l and name_l in p["name"].casefold()), None)
     if target is None:
         return None
-    tracks, url_path = [], f"/playlists/{target['id']}/tracks"
-    data = _sp_get(s, url_path, {"limit": 100})
-    while data:
-        for it in data.get("items", []) or []:
-            t = it.get("track")
-            if t and t.get("uri") and not t.get("is_local"):
-                tracks.append(claude_music._track_dict(t))
-        nxt = data.get("next")
-        if not nxt:
-            break
-        data = _sp_get(s, nxt)
-    if not tracks:
+    return {"id": target["id"], "name": target.get("name"),
+            "count": max(0, int(target.get("track_count") or 0)), "index": 0}
+
+
+def _playlist_track_at(s, playlist, index):
+    """Fetch precisely one playlist entry, by its zero-based Spotify offset."""
+    count = int(playlist.get("count") or 0)
+    if count <= 0:
         return None
-    return {"id": target["id"], "name": target.get("name"), "tracks": tracks, "index": 0}
+    index %= count
+    data = _sp_get(s, f"/playlists/{playlist['id']}/tracks", {"limit": 1, "offset": index}) or {}
+    for item in data.get("items", []) or []:
+        track = item.get("track") or {}
+        if track.get("uri") and not track.get("is_local"):
+            return claude_music._track_dict(track)
+    return None
+
+
+def _playlist_stress_sample(s, playlist, maximum=25):
+    """Read one small window only when Claude needs to adapt a playlist to stress."""
+    count = int(playlist.get("count") or 0)
+    if count <= 0:
+        return []
+    limit = min(maximum, count)
+    # Centre the small window on the last prompt position. This keeps the change
+    # related to what the listener was hearing while never downloading the list.
+    offset = max(0, min(int(playlist.get("index") or 0) - limit // 2, count - limit))
+    data = _sp_get(s, f"/playlists/{playlist['id']}/tracks", {"limit": limit, "offset": offset}) or {}
+    candidates = []
+    for relative_index, item in enumerate(data.get("items", []) or []):
+        track = item.get("track") or {}
+        if track.get("uri") and not track.get("is_local"):
+            candidates.append({"position": offset + relative_index,
+                               "track": claude_music._track_dict(track)})
+    return candidates
+
+
+def _playlist_track_for_direction(s, playlist, direction, api_key=None, model=None):
+    """Resolve a playlist track without ever materialising the entire playlist."""
+    count = int(playlist.get("count") or 0)
+    if count <= 0:
+        return None
+    if direction == "stress":
+        candidates = _playlist_stress_sample(s, playlist)
+        position = claude_music.pick_playlist_track_position(
+            candidates, _current_label(), api_key=api_key, model=model)
+        if position is None:
+            return None
+        playlist["index"] = position
+        return next((candidate["track"] for candidate in candidates
+                     if candidate["position"] == position), None)
+    if direction == "next":
+        playlist["index"] = (int(playlist.get("index") or 0) + 1) % count
+    elif direction == "prev":
+        playlist["index"] = (int(playlist.get("index") or 0) - 1) % count
+    return _playlist_track_at(s, playlist, playlist["index"])
+
+
+def _playlist_response(playlist):
+    return {"id": playlist["id"], "name": playlist["name"],
+            "index": playlist["index"], "count": playlist["count"]}
 
 
 def _matches_personalization(mode, value, track, artist=None):
@@ -760,25 +810,20 @@ async def api_personalize(request: Request):
                 if s["playlist"] is None:
                     if not value:
                         return {"ok": False, "error": "no_value"}
-                    pl = _load_playlist(s, value, s.get("playlist_id"))
+                    pl = _select_playlist(s, value, s.get("playlist_id"))
                     if pl is None:
                         return {"ok": False, "error": "playlist_not_found"}
                     s["playlist"] = pl
                 pl = s["playlist"]
-                if direction == "stress":
-                    idx = claude_music.pick_playlist_track_index(
-                        pl["tracks"], _current_label(), api_key=s["key"], model=s["model"])
-                    if idx is None:
-                        return {"ok": False, "error": "playlist_selection_failed"}
-                    pl["index"] = idx
-                elif direction == "next":
-                    pl["index"] = (pl["index"] + 1) % len(pl["tracks"])
-                elif direction == "prev":
-                    pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
-                tr = pl["tracks"][pl["index"]]
+                if not pl["count"]:
+                    return {"ok": False, "error": "playlist_empty"}
+                tr = _playlist_track_for_direction(
+                    s, pl, direction, api_key=s["key"], model=s["model"])
+                if not tr:
+                    error = "playlist_selection_failed" if direction == "stress" else "playlist_track_unavailable"
+                    return {"ok": False, "error": error}
                 return {"ok": True, "track": tr, "mode": mode,
-                        "playlist": {"id": pl["id"], "name": pl["name"], "index": pl["index"],
-                                     "count": len(pl["tracks"])}}
+                        "playlist": _playlist_response(pl)}
 
             if mode == "song" and direction == "init":
                 hits = claude_music.search_query(value, limit=10, user_token=tok)
@@ -868,24 +913,25 @@ async def api_karaoke(request: Request):
             if mode == "playlist":
                 pl = s.get("playlist")
                 if not pl:
-                    pl = _load_playlist(s, s.get("value", ""), s.get("playlist_id"))
+                    pl = _select_playlist(s, s.get("value", ""), s.get("playlist_id"))
                     if pl is None:
                         return {"ok": False, "error": "playlist"}
                     s["playlist"] = pl
-                if direction == "stress":
-                    idx = claude_music.pick_playlist_track_index(
-                        pl["tracks"], _current_label(), api_key=s["key"], model=s["model"])
-                    if idx is None:
-                        return {"ok": False, "error": "playlist"}
-                    pl["index"] = idx
-                elif direction == "next":
-                    pl["index"] = (pl["index"] + 1) % len(pl["tracks"])
-                elif direction == "prev":
-                    pl["index"] = (pl["index"] - 1) % len(pl["tracks"])
-                order = list(range(pl["index"], len(pl["tracks"]))) + list(range(pl["index"]))
+                if not pl["count"]:
+                    return {"ok": False, "error": "playlist"}
+                first_track = _playlist_track_for_direction(
+                    s, pl, direction, api_key=s["key"], model=s["model"])
+                if not first_track:
+                    return {"ok": False, "error": "playlist"}
+                # Karaoke may need to reject a track without lyrics or an
+                # instrumental, but probes at most 25 one-item Spotify reads.
+                order = [(pl["index"] + step) % pl["count"]
+                         for step in range(min(25, pl["count"]))]
                 attempted = False
                 for index in order[:25]:
-                    tr = pl["tracks"][index]
+                    tr = first_track if index == pl["index"] else _playlist_track_at(s, pl, index)
+                    if not tr:
+                        continue
                     key = _track_key(tr)
                     if key in s["karaoke_tried"]:
                         continue
@@ -896,8 +942,7 @@ async def api_karaoke(request: Request):
                     if pkg:
                         pl["index"] = index
                         pkg["original"] = tr
-                        pkg["playlist"] = {"id": pl["id"], "name": pl["name"], "index": index,
-                                           "count": len(pl["tracks"])}
+                        pkg["playlist"] = _playlist_response(pl)
                         return {"ok": True, **pkg}
                 if not attempted:                     # whole window already tried -> let a retry start over
                     s["karaoke_tried"] = set()
