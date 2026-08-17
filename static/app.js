@@ -293,7 +293,6 @@ async function sunoLoad(bucket, autoplay) {
     $("sunoName").textContent = j.name;
     $("sunoBucket").textContent = j.bucket + " BPM folder";
     sunoBucket = j.bucket;
-    breatheOnSongChange();
     if (autoplay || sunoPlaying) {
       try { await nxt.play(); sunoPlaying = true; $("sunoPlay").innerHTML = "&#10074;&#10074;"; } catch(e){}
       await fadeEl(nxt, SUNO_VOL, FADE_MS);
@@ -820,9 +819,9 @@ function syncLyrics(posMs) {
 }
 
 /* ============================ 10 · breathe ============================ */
-let breatheOn = false, breatheBuffering = true, breatheTarget = null;
+let breatheOn = false, breatheBuffering = true, breatheSongTarget = null;
 let audioCtx = null, analyser = null, waveData = null, breatheRAF = 0;
-let energyHist = [], lastPeakAt = 0, breathePulseTimer = 0, breatheCollapseTimer = 0;
+let breatheCircleBpm = null, breatheCycleStart = 0;
 const BMSG = "I apologize, but you must enable the AI-generated songs to use the breathe feature";
 
 function ensureAudioGraph() {
@@ -852,14 +851,15 @@ function enterBreathe() {
   breatheSourceCheck();
   if (audioSource === "spotify") return;    // blocked; breatheTick starts the loop once unblocked
   breatheRetarget(true);
-  startBeatLoop();
+  startBreatheLoop();
 }
 function exitBreathe() {
   if (!breatheOn) return;
   breatheOn = false;
   sunoOverride = null;
   cancelAnimationFrame(breatheRAF); breatheRAF = 0;
-  stopSteadyBreath();
+  breatheCircleBpm = null;
+  breatheCycleStart = 0;
   $("breatheLoading").hidden = true;
   $("bCircle").classList.remove("buffering");
 }
@@ -872,99 +872,71 @@ function baselineBucket() {
     : 60;
 }
 function breatheRetarget(force) {
-  // circle frequency = ((BPM // 10) * 10) - 10, never below the user's baseline
-  const bpm = (S && S.bpm) || 60;
-  const target = Math.max(baselineBucket(), clamp(Math.floor(bpm / 10) * 10 - 10, 60, 150));
-  if (target !== breatheTarget || force) {
-    breatheTarget = target;
-    sunoOverride = target;                        // the song maps to the target BPM folder
-    $("breatheTarget").textContent = "target " + target + " BPM · baseline " + baselineBucket() + " BPM";
-    setBuffering(true);
-    if (!sunoPlaying || sunoBucket !== target) { claimAudio("suno"); sunoLoad(target, true); }
+  const userBpm = Number((S && S.bpm) || 60);
+  if (!Number.isFinite(userBpm) || userBpm <= 0) return;
+
+  // The song can still use its therapeutic BPM bucket, but the visual is
+  // deliberately independent: it follows only the user's live BPM.
+  const songTarget = Math.max(
+    baselineBucket(), clamp(Math.floor(userBpm / 10) * 10 - 10, 60, 150));
+  if (songTarget !== breatheSongTarget || force) {
+    breatheSongTarget = songTarget;
+    sunoOverride = songTarget;
+    if (!sunoPlaying || sunoBucket !== songTarget) { claimAudio("suno"); sunoLoad(songTarget, true); }
+  }
+
+  // circle_BPM = 5 × log₂(user_BPM). Preserve the current cycle phase when
+  // BPM changes so the new value takes effect immediately without a visual jump.
+  const circleBpm = 5 * Math.log2(userBpm);
+  if (force || breatheBuffering || circleBpm !== breatheCircleBpm) {
+    const now = performance.now();
+    if (breatheCircleBpm && breatheCycleStart) {
+      const oldCycleMs = 60000 / breatheCircleBpm;
+      const phase = ((now - breatheCycleStart) % oldCycleMs + oldCycleMs) % oldCycleMs / oldCycleMs;
+      breatheCycleStart = now - phase * (60000 / circleBpm);
+    } else {
+      breatheCycleStart = now;
+    }
+    breatheCircleBpm = circleBpm;
+    $("breatheTarget").textContent =
+      "circle " + circleBpm.toFixed(1) + " BPM · user " + userBpm.toFixed(1) + " BPM";
+    setBuffering(false);
   }
 }
 function breatheTick(s) {
   if (!breatheOn) return;
   breatheSourceCheck();
   if (audioSource !== "suno") return;
-  if (!breatheRAF) {                               // was blocked by Spotify at entry -> start now
-    breatheRetarget(true);
-    startBeatLoop();
-    return;
-  }
-  breatheRetarget(false);                          // recalc as the user's BPM comes down
-}
-function breatheOnSongChange() {                   // every song change waits for the next beat
-  if (breatheOn) setBuffering(true);
-}
-function stopSteadyBreath() {
-  if (breathePulseTimer) clearTimeout(breathePulseTimer);
-  if (breatheCollapseTimer) clearTimeout(breatheCollapseTimer);
-  breathePulseTimer = 0;
-  breatheCollapseTimer = 0;
+  breatheRetarget(!breatheRAF);                    // recalculate from every live BPM update
+  if (!breatheRAF) startBreatheLoop();             // resumed after Spotify ownership
 }
 function setBuffering(on) {
   breatheBuffering = on;
-  if (on) stopSteadyBreath();
   $("bCircle").classList.toggle("buffering", on);
   $("breatheLoading").hidden = !on;
-  $("breatheStatus").textContent = on ? "buffering · waiting for the beat…" : "breathe with the circle";
+  $("breatheStatus").textContent = on ? "buffering · reading your BPM…" : "breathe with the circle";
 }
-function startBeatLoop() {
+function startBreatheLoop() {
   cancelAnimationFrame(breatheRAF);
-  energyHist = [];
-  lastPeakAt = 0;
   const canvas = $("waveCanvas"), cctx = canvas.getContext("2d");
-  const loop = () => {
+  const loop = now => {
     if (!breatheOn) return;
     breatheRAF = requestAnimationFrame(loop);
-    if (!analyser) return;
-    analyser.getByteTimeDomainData(waveData);
-    // --- energy / onset detection: a spike in amplitude = a beat ---
-    let sum = 0;
-    for (let i = 0; i < waveData.length; i++) { const d = (waveData[i] - 128) / 128; sum += d * d; }
-    const energy = Math.sqrt(sum / waveData.length);
-    energyHist.push(energy);
-    if (energyHist.length > 43) energyHist.shift();        // ~0.7 s of history at 60 fps
-    const avg = energyHist.reduce((a, b) => a + b, 0) / energyHist.length;
-    const now = performance.now();
-    const interval = 60000 / (breatheTarget || 60);
-    // Analyse waveform peaks only long enough to align the first expansion to
-    // the music. The subsequent cycle is an even BPM clock, not a repeated
-    // reaction to each amplitude spike.
-    if (breatheBuffering && sunoPlaying && !sunoFetching && sunoBucket === breatheTarget &&
-        audioSource === "suno" && energyHist.length > 8 &&
-        energy > Math.max(0.02, avg * 1.35) && now - lastPeakAt > 250) {
-      lastPeakAt = now;
-      alignBreathToFirstPeak(interval);
-    }
+    if (analyser) analyser.getByteTimeDomainData(waveData);
+    renderBreathCircle(now);
     drawWave(cctx, canvas);
   };
-  loop();
+  breatheRAF = requestAnimationFrame(loop);
 }
-function alignBreathToFirstPeak(interval) {
-  setBuffering(false);
-  runSteadyBreath(interval);
-}
-function runSteadyBreath(interval) {
-  if (!breatheOn || breatheBuffering || audioSource !== "suno") return;
+function renderBreathCircle(now) {
+  if (!breatheOn || breatheBuffering || !breatheCircleBpm) return;
   const c = $("bCircle");
-  const halfCycle = Math.max(100, Math.round(interval / 2));
-  // A waveform peak is the full expansion. Contract for half a beat, then
-  // expand for the same half-beat so the next full expansion lands exactly on
-  // the next BPM tick.
-  c.style.transition = "transform 0ms";
-  c.style.transform = "scale(1)";
-  requestAnimationFrame(() => {
-    if (!breatheOn || breatheBuffering || audioSource !== "suno") return;
-    c.style.transition = "transform " + halfCycle + "ms ease-in-out";
-    c.style.transform = "scale(.55)";
-  });
-  breatheCollapseTimer = setTimeout(() => {
-    c.style.transition = "transform " + halfCycle + "ms ease-in-out";
-    c.style.transform = "scale(1)";
-  }, halfCycle);
-  breathePulseTimer = setTimeout(() => runSteadyBreath(interval), interval);
+  const cycleMs = 60000 / breatheCircleBpm;
+  const phase = ((now - breatheCycleStart) % cycleMs + cycleMs) % cycleMs / cycleMs;
+  // A cosine gives equally long contraction and expansion phases: fully
+  // expanded at cycle BPM ticks, fully contracted halfway between them.
+  const amount = (1 + Math.cos(2 * Math.PI * phase)) / 2;
+  c.style.transform = "scale(" + (0.55 + 0.45 * amount).toFixed(4) + ")";
 }
 function drawWave(cctx, canvas) {
   const r = canvas.getBoundingClientRect();
