@@ -137,7 +137,9 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         do {
             try camera.lockForConfiguration()
             defer { camera.unlockForConfiguration() }
-            let torchLevel = min(AVCaptureDevice.maxAvailableTorchLevel, 0.85)
+            // A near-maximum torch level gives dimmer fingertips enough optical
+            // contrast without forcing every device to its absolute maximum.
+            let torchLevel = min(AVCaptureDevice.maxAvailableTorchLevel, 0.95)
             try camera.setTorchModeOn(level: torchLevel)
             if camera.isExposureModeSupported(.continuousAutoExposure) {
                 camera.exposureMode = .continuousAutoExposure
@@ -247,7 +249,9 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         guard count > 0 else { return }
         let meanLuma = lumaSum / Double(count)
         let meanCr = chroma == nil ? 128 : crSum / Double(count)
-        let coveredFinger = meanLuma > 30 && (meanCr > 132 || meanLuma > 110)
+        // Be permissive enough for darker skin tones, thicker fingertips, and
+        // camera modules where the flash sits farther from the active lens.
+        let coveredFinger = meanLuma > 20 && (meanCr > 128 || meanLuma > 90)
         frameCount += 1
         if frameCount % 5 == 0 {
             DispatchQueue.main.async { self.fingerDetected = coveredFinger }
