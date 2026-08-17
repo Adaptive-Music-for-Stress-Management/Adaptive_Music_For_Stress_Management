@@ -38,13 +38,12 @@ struct PersonalizeCard: View {
                 suno.seek(to: t)
             }
             HStack(spacing: 22) {
-                transportButton("chevron.backward.2") { engine.claimAudio(.suno); suno.skip() }
+                transportButton("chevron.backward.2") { Task { await engine.skipSuno() } }
                 transportButton(suno.playing && engine.audioSource == .suno ? "pause.fill" : "play.fill",
                                 big: true) {
-                    engine.claimAudio(.suno)
-                    suno.togglePlay()
+                    Task { await engine.toggleSuno() }
                 }
-                transportButton("chevron.forward.2") { engine.claimAudio(.suno); suno.skip() }
+                transportButton("chevron.forward.2") { Task { await engine.skipSuno() } }
             }
             .frame(maxWidth: .infinity)
             if let bucket = suno.bucket {
