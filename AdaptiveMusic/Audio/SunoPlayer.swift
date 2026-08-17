@@ -27,6 +27,7 @@ final class SunoPlayer: NSObject, ObservableObject {
     private var offsetA: Double = 0                 // seek offset in seconds for each node
     private var offsetB: Double = 0
     private var switching = false
+    private var playbackGeneration = 0
     private var playedPerBucket: [Int: Set<String>] = [:]
     private var ticker: AnyCancellable?
     private var stressLabelSeen: StressLabel?
@@ -174,6 +175,31 @@ final class SunoPlayer: NSObject, ObservableObject {
         ramp(node: activeNode, to: 0.0, over: 0.4) { [weak self] in self?.activeNode.pause() }
     }
 
+    /// Completes the local fade before a remote Spotify track is allowed to
+    /// start, preventing the two sources from briefly playing together.
+    func pauseForAudioHandoff() async {
+        guard playing else { return }
+        // Cancel a pending in-library fade/switch so it cannot start another
+        // AI track after the handoff has already moved to Spotify.
+        playbackGeneration &+= 1
+        switching = false
+        playing = false
+        let node = activeNode
+        let key = ObjectIdentifier(node)
+        rampTimers[key]?.invalidate()
+        rampTimers[key] = nil
+        let initialVolume = node.volume
+        let steps = 12
+        for step in 1...steps {
+            try? await Task.sleep(nanoseconds: 33_000_000)
+            // A newer SUNO play request superseded this handoff.
+            guard !playing else { return }
+            node.volume = initialVolume * Float(steps - step) / Float(steps)
+        }
+        guard !playing else { return }
+        node.pause()
+    }
+
     func togglePlay() { playing ? pause() : play() }
 
     /// « and » — another song from the current target bucket.
@@ -200,10 +226,12 @@ final class SunoPlayer: NSObject, ObservableObject {
         guard !switching else { return }
         guard let url = nextTrack(bucket: newBucket) else { return }
         switching = true
+        let generation = playbackGeneration
         let oldNode = activeNode
         let fadeOut = activeFile != nil && playing ? 1.1 : 0.0
         ramp(node: oldNode, to: 0.0, over: fadeOut) { [weak self] in
             guard let self else { return }
+            guard self.playbackGeneration == generation else { return }
             oldNode.stop()
             self.activeIsA.toggle()
             let node = self.activeNode

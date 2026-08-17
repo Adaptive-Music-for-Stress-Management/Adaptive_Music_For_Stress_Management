@@ -74,6 +74,7 @@ final class PersonalizeEngine: ObservableObject {
     private var poller: AnyCancellable?
     private var lastPos = 0
     private var stressLabelSeen: StressLabel? = nil
+    private var audioHandoffID = 0
 
     var initialized: Bool { claude.keySet && spotify.connected && spotify.premium }
 
@@ -84,15 +85,40 @@ final class PersonalizeEngine: ObservableObject {
         }
     }
 
-    func claimAudio(_ source: AudioSource) {
-        guard audioSource != source else { return }
+    private func beginAudioHandoff(to source: AudioSource) -> Int {
+        audioHandoffID &+= 1
         audioSource = source
-        if source == .spotify {
-            suno.pause()
-        } else {
-            Task { await spotify.pause() }
-            isPlaying = false
+        if source == .spotify { isPlaying = false }
+        return audioHandoffID
+    }
+
+    private func ownsAudioHandoff(_ id: Int, source: AudioSource) -> Bool {
+        id == audioHandoffID && audioSource == source
+    }
+
+    /// Spotify's remote pause is acknowledged before an AI track starts. This
+    /// avoids overlap between the Connect player and the local AVAudioEngine.
+    private func moveToSuno() async -> Bool {
+        let id = beginAudioHandoff(to: .suno)
+        await spotify.pause()
+        guard ownsAudioHandoff(id, source: .suno) else { return false }
+        isPlaying = false
+        return true
+    }
+
+    func toggleSuno() async {
+        if audioSource == .suno {
+            suno.togglePlay()
+        } else if await moveToSuno() {
+            suno.play()
         }
+    }
+
+    func skipSuno() async {
+        if audioSource != .suno {
+            guard await moveToSuno() else { return }
+        }
+        suno.skip()
     }
 
     private var stressLabel: StressLabel { hub.stressLabel ?? .mild }
@@ -302,14 +328,20 @@ final class PersonalizeEngine: ObservableObject {
     }
 
     func play(track: SpotifyTrack, positionMs: Int = 0, autoplay: Bool = true) async {
-        claimAudio(.spotify)
+        let handoffID = beginAudioHandoff(to: .spotify)
+        await suno.pauseForAudioHandoff()
+        guard ownsAudioHandoff(handoffID, source: .spotify) else { return }
         if deviceID == nil { deviceID = await spotify.activeDeviceID() }
-        guard deviceID != nil else {
+        guard ownsAudioHandoff(handoffID, source: .spotify), deviceID != nil else {
             message = "Open the Spotify app once, then try again."
             return
         }
         let safePosition = max(0, min(positionMs, max(0, track.durationMs - 250)))
         let ok = await spotify.play(uri: track.uri, deviceID: deviceID, positionMs: safePosition)
+        guard ownsAudioHandoff(handoffID, source: .spotify) else {
+            if ok { await spotify.pause() }
+            return
+        }
         if ok {
             currentTrack = track
             durationMs = track.durationMs
@@ -325,8 +357,17 @@ final class PersonalizeEngine: ObservableObject {
 
     func togglePlay() async {
         guard currentTrack != nil else { return }
-        if isPlaying { await spotify.pause(); isPlaying = false }     // pausing also pauses lyrics
-        else { claimAudio(.spotify); await spotify.resume(); isPlaying = true }
+        let wasPlaying = audioSource == .spotify && isPlaying
+        let handoffID = beginAudioHandoff(to: .spotify)
+        if wasPlaying {
+            await spotify.pause()                                    // pausing also pauses lyrics
+            if ownsAudioHandoff(handoffID, source: .spotify) { isPlaying = false }
+            return
+        }
+        await suno.pauseForAudioHandoff()
+        guard ownsAudioHandoff(handoffID, source: .spotify) else { return }
+        await spotify.resume()
+        if ownsAudioHandoff(handoffID, source: .spotify) { isPlaying = true }
     }
 
     func seek(toMs ms: Int) async {
