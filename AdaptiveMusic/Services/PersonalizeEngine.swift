@@ -49,6 +49,9 @@ final class PersonalizeEngine: ObservableObject {
     @Published var playlistName: String? = nil
     @Published var playlistIndex = 0
     @Published var playlistCount = 0
+    @Published var playlists: [SpotifyPlaylist] = []
+    @Published var playlistsLoading = false
+    @Published var selectedPlaylistID: String? = nil
 
     // karaoke
     @Published var karaoke: KaraokePackage? = nil
@@ -65,10 +68,12 @@ final class PersonalizeEngine: ObservableObject {
 
     private var history: Set<String> = []
     private var karaokeTried: Set<String> = []
-    private var playlistTracks: [SpotifyTrack] = []
+    private var selectedPlaylist: SpotifyPlaylist? = nil
+    private var seedArtist: String? = nil
     private var deviceID: String? = nil
     private var poller: AnyCancellable?
     private var lastPos = 0
+    private var stressLabelSeen: StressLabel? = nil
 
     var initialized: Bool { claude.keySet && spotify.connected && spotify.premium }
 
@@ -94,12 +99,55 @@ final class PersonalizeEngine: ObservableObject {
 
     // MARK: - choosing / transport
 
+    /// Fetch picker metadata only; playlist tracks remain on Spotify until needed.
+    func loadPlaylists() async {
+        guard initialized, !playlistsLoading else { return }
+        playlistsLoading = true
+        defer { playlistsLoading = false }
+        playlists = await spotify.playlists()
+    }
+
+    /// The user chose a visible playlist button rather than typing an ambiguous name.
+    func selectPlaylist(_ playlist: SpotifyPlaylist) async {
+        guard initialized else { message = PersonalizeEngine.initMessage; return }
+        let changed = mode != .playlist || selectedPlaylist?.id != playlist.id
+        mode = .playlist
+        value = playlist.name
+        stressLabelSeen = stressLabel
+        selectedPlaylist = playlist
+        selectedPlaylistID = playlist.id
+        playlistName = playlist.name
+        playlistIndex = 0
+        playlistCount = playlist.trackCount
+        if changed { resetChoiceState(keepingPlaylist: true) }
+        if karaoke != nil || karaokeMessage != nil {
+            await fetchKaraoke(current: nil)
+        } else {
+            await request(direction: 0)
+        }
+    }
+
+    /// Clearing the picker presentation must not leave a stale playlist error
+    /// or selected-button effect behind while a new text preference is entered.
+    func beginNewTextPreference() {
+        message = nil
+        selectedPlaylistID = nil
+    }
+
     /// The Confirm button under a tab.
     func confirm(mode: PersonalizeMode, value: String) async {
         guard initialized else { message = PersonalizeEngine.initMessage; return }
         let changed = mode != self.mode || value != self.value
         self.mode = mode; self.value = value
-        if changed { history = []; karaokeTried = []; playlistTracks = []; playlistName = nil }
+        stressLabelSeen = stressLabel
+        if mode != .playlist {
+            selectedPlaylist = nil
+            selectedPlaylistID = nil
+            playlistName = nil
+            playlistIndex = 0
+            playlistCount = 0
+        }
+        if changed { resetChoiceState(keepingPlaylist: mode == .playlist) }
         if karaoke != nil || karaokeMessage != nil {           // karaoke open -> feed karaoke instead
             await fetchKaraoke(current: nil)
             return
@@ -109,41 +157,43 @@ final class PersonalizeEngine: ObservableObject {
 
     /// « / » — direction -1 / +1; 0 = initial confirm.
     func skip(_ direction: Int) async {
-        if karaoke != nil { await fetchKaraoke(current: nil); return }
+        if karaoke != nil || karaokeMessage != nil {
+            await fetchKaraoke(current: nil, direction: direction)
+            return
+        }
         await request(direction: direction)
     }
 
-    private func request(direction: Int) async {
+    private func request(direction: Int, adaptToStress: Bool = false) async {
         guard let mode else { message = PersonalizeEngine.chooseMessage; return }
         busy = true; message = nil
         defer { busy = false }
         switch mode {
         case .playlist:
-            if playlistTracks.isEmpty {
-                guard let pl = await spotify.playlistTracks(named: value) else {
-                    message = "Couldn't find a playlist with that name in your library."
-                    return
-                }
-                playlistTracks = pl.tracks; playlistName = pl.name
-                playlistIndex = 0; playlistCount = pl.tracks.count
-            } else if direction != 0 {
-                playlistIndex = ((playlistIndex + direction) % playlistCount + playlistCount) % playlistCount
-            }
-            await play(track: playlistTracks[playlistIndex])
-        case .song where direction == 0:
-            guard let track = await spotify.searchTrack(value, limit: 1).first else {
-                message = "Couldn't find that song on Spotify."
+            guard let track = await playlistTrack(direction: direction, adaptToStress: adaptToStress) else {
+                if message == nil { message = "That playlist song is unavailable to play." }
                 return
             }
             await play(track: track)
+        case .song where direction == 0 && !adaptToStress:
+            guard let track = await spotify.searchTrack(value, limit: 10)
+                .first(where: { matchesPersonalization(.song, value: value, track: $0) }) else {
+                message = "Couldn't find that song on Spotify."
+                return
+            }
+            seedArtist = track.artist
+            await play(track: track)
         default:
             do {
-                let suggestions = try await claude.pickSongs(mode: mode, value: value,
+                let suggestionMode: PersonalizeMode = mode == .song ? .artist : mode
+                let suggestionValue = mode == .song ? (seedArtist ?? value) : value
+                let suggestions = try await claude.pickSongs(mode: suggestionMode, value: suggestionValue,
                                                              label: stressLabel,
                                                              exclude: Array(history))
                 var fallback: SpotifyTrack? = nil
                 for s in suggestions.shuffled() {
                     guard let track = await spotify.search(artist: s.artist, title: s.title) else { continue }
+                    guard matchesPersonalization(.artist, value: s.artist, track: track) else { continue }
                     let key = "\(track.artist) — \(track.name)".lowercased()
                     if history.contains(key) { fallback = fallback ?? track; continue }
                     await play(track: track)
@@ -159,19 +209,113 @@ final class PersonalizeEngine: ObservableObject {
         }
     }
 
-    func play(track: SpotifyTrack) async {
+    private func resetChoiceState(keepingPlaylist: Bool = false) {
+        history = []
+        karaokeTried = []
+        seedArtist = nil
+        if !keepingPlaylist {
+            selectedPlaylist = nil
+            selectedPlaylistID = nil
+            playlistName = nil
+            playlistIndex = 0
+            playlistCount = 0
+        }
+    }
+
+    /// Resolves one exact sequential item, or asks Claude to choose from one
+    /// bounded real-track sample when the stress label changes.
+    private func playlistTrack(direction: Int, adaptToStress: Bool) async -> SpotifyTrack? {
+        guard let playlist = selectedPlaylist else {
+            message = "Choose a playlist first."
+            return nil
+        }
+        guard playlist.trackCount > 0 else {
+            message = "That playlist has no playable songs."
+            return nil
+        }
+        playlistCount = playlist.trackCount
+        if adaptToStress {
+            let candidates = await spotify.playlistStressCandidates(
+                playlistID: playlist.id, count: playlist.trackCount, around: playlistIndex)
+            guard let position = await claude.pickPlaylistPosition(candidates: candidates, label: stressLabel),
+                  let candidate = candidates.first(where: { $0.position == position }) else {
+                message = "Couldn't choose a suitable song from that playlist — try again."
+                return nil
+            }
+            playlistIndex = position
+            return candidate.track
+        }
+        if direction != 0 {
+            playlistIndex = ((playlistIndex + direction) % playlist.trackCount + playlist.trackCount)
+                % playlist.trackCount
+        }
+        return await spotify.playlistTrack(playlistID: playlist.id, at: playlistIndex)
+    }
+
+    private func adaptToStressIfNeeded() async {
+        guard let latestLabel = hub.stressLabel else { return }
+        guard let previousLabel = stressLabelSeen else {
+            stressLabelSeen = latestLabel
+            return
+        }
+        guard latestLabel != previousLabel else { return }
+        stressLabelSeen = latestLabel
+        guard !busy, !karaokeBusy, mode != nil else { return }
+        if karaoke != nil {
+            await fetchKaraoke(current: nil, adaptToStress: true)
+        } else {
+            await request(direction: 0, adaptToStress: true)
+        }
+    }
+
+    private func normalised(_ value: String) -> String {
+        let folded = value.folding(options: [.caseInsensitive, .diacriticInsensitive],
+                                   locale: .current)
+        return folded.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func artistsMatch(_ expected: String, _ candidate: String) -> Bool {
+        let wanted = normalised(expected)
+        let actual = normalised(candidate)
+        return !wanted.isEmpty && !actual.isEmpty &&
+            (wanted == actual || actual.contains(wanted) || wanted.contains(actual))
+    }
+
+    private func matchesPersonalization(_ mode: PersonalizeMode, value: String,
+                                        track: SpotifyTrack) -> Bool {
+        switch mode {
+        case .artist:
+            return artistsMatch(value, track.artist)
+        case .song:
+            let wanted = normalised(value)
+            let actual = normalised(track.name)
+            if wanted.isEmpty || actual.isEmpty { return false }
+            if actual.contains(wanted) { return true }
+            return wanted.split(separator: " ").contains {
+                $0.count > 1 && actual.contains(String($0))
+            }
+        case .vibe, .playlist:
+            return true
+        }
+    }
+
+    func play(track: SpotifyTrack, positionMs: Int = 0, autoplay: Bool = true) async {
         claimAudio(.spotify)
         if deviceID == nil { deviceID = await spotify.activeDeviceID() }
         guard deviceID != nil else {
             message = "Open the Spotify app once, then try again."
             return
         }
-        let ok = await spotify.play(uri: track.uri, deviceID: deviceID)
+        let safePosition = max(0, min(positionMs, max(0, track.durationMs - 250)))
+        let ok = await spotify.play(uri: track.uri, deviceID: deviceID, positionMs: safePosition)
         if ok {
             currentTrack = track
             durationMs = track.durationMs
-            positionMs = 0
-            isPlaying = true
+            self.positionMs = safePosition
+            isPlaying = autoplay
+            if !autoplay { await spotify.pause() }
             history.insert("\(track.artist) — \(track.name)".lowercased())
         } else {
             deviceID = nil
@@ -196,6 +340,7 @@ final class PersonalizeEngine: ObservableObject {
         positionMs = st.0
         if st.1 > 0 { durationMs = st.1 }
         isPlaying = st.2
+        await adaptToStressIfNeeded()
         // track finished -> continue the loop (karaoke keeps fetching karaoke packages)
         if !st.2 && st.0 == 0 && lastPos > durationMs - 3000 && durationMs > 0 {
             lastPos = 0
@@ -221,7 +366,8 @@ final class PersonalizeEngine: ObservableObject {
         karaoke = nil; karaokeMessage = nil; karaokeBusy = false
     }
 
-    private func fetchKaraoke(current: SpotifyTrack?) async {
+    private func fetchKaraoke(current: SpotifyTrack?, direction: Int = 0,
+                              adaptToStress: Bool = false) async {
         guard let mode else { karaokeMessage = PersonalizeEngine.chooseMessage; return }
         karaokeBusy = true; karaokeMessage = nil
         defer { karaokeBusy = false }
@@ -247,30 +393,47 @@ final class PersonalizeEngine: ObservableObject {
             let exactKey = "exact:" + value.lowercased()
             if !karaokeTried.contains(exactKey) {
                 karaokeTried.insert(exactKey)
-                guard let track = await spotify.searchTrack(value, limit: 1).first,
+                guard let track = await spotify.searchTrack(value, limit: 10)
+                    .first(where: { matchesPersonalization(.song, value: value, track: $0) }),
                       let pkg = await package(for: track) else {
                     karaokeMessage = PersonalizeEngine.songFailMessage
                     return
                 }
+                seedArtist = track.artist
                 karaokeTried.insert(key(track))
                 await present(pkg)
                 return
             }
             await claudeKaraokeRound()
         case .playlist:
-            if playlistTracks.isEmpty {
-                if let pl = await spotify.playlistTracks(named: value) {
-                    playlistTracks = pl.tracks; playlistName = pl.name; playlistCount = pl.tracks.count
-                }
+            guard let playlist = selectedPlaylist, playlist.trackCount > 0,
+                  let firstTrack = await playlistTrack(direction: direction,
+                                                       adaptToStress: adaptToStress) else {
+                karaokeMessage = PersonalizeEngine.playlistFailMessage
+                return
             }
-            let start = playlistTracks.isEmpty ? 0 : min(max(0, playlistIndex), playlistTracks.count - 1)
-            let rotated = playlistTracks.isEmpty ? [] :
-                Array(playlistTracks[start...] + playlistTracks[..<start])
+            // An unavailable instrumental/lyrics pair can require a few tries,
+            // but every retry is an exact one-item playlist read, never a preload.
+            let positions = (0..<min(25, playlist.trackCount)).map {
+                (playlistIndex + $0) % playlist.trackCount
+            }
             var attempted = false
-            for track in rotated.prefix(25) where !karaokeTried.contains(key(track)) {
+            for position in positions {
+                let candidate: SpotifyTrack?
+                if position == playlistIndex {
+                    candidate = firstTrack
+                } else {
+                    candidate = await spotify.playlistTrack(playlistID: playlist.id, at: position)
+                }
+                guard let track = candidate else { continue }
+                guard !karaokeTried.contains(key(track)) else { continue }
                 attempted = true
                 karaokeTried.insert(key(track))
-                if let pkg = await package(for: track) { await present(pkg); return }
+                if let pkg = await package(for: track) {
+                    playlistIndex = position
+                    await present(pkg)
+                    return
+                }
             }
             if !attempted { karaokeTried = [] }        // whole window tried -> a retry starts over
             karaokeMessage = PersonalizeEngine.playlistFailMessage
@@ -283,8 +446,10 @@ final class PersonalizeEngine: ObservableObject {
     /// version and lyrics (vibe/artist always; song mode = other songs by the artist).
     private func claudeKaraokeRound() async {
         guard let mode else { return }
+        let suggestionMode: PersonalizeMode = mode == .song ? .artist : mode
+        let suggestionValue = mode == .song ? (seedArtist ?? value) : value
         for _ in 0..<3 {
-            guard let suggestions = try? await claude.pickSongs(mode: mode, value: value,
+            guard let suggestions = try? await claude.pickSongs(mode: suggestionMode, value: suggestionValue,
                                                                 label: stressLabel,
                                                                 exclude: Array(karaokeTried)) else { break }
             for s in suggestions {
@@ -292,6 +457,7 @@ final class PersonalizeEngine: ObservableObject {
                 if karaokeTried.contains(k) { continue }
                 karaokeTried.insert(k)
                 guard let track = await spotify.search(artist: s.artist, title: s.title) else { continue }
+                guard matchesPersonalization(.artist, value: s.artist, track: track) else { continue }
                 if let pkg = await package(for: track) { await present(pkg); return }
             }
         }
@@ -310,7 +476,8 @@ final class PersonalizeEngine: ObservableObject {
                   "\(track.name) \(track.artist) karaoke"] {
             for t in await spotify.searchTrack(q, limit: 5) {
                 let n = (t.name + " " + t.artist).lowercased()
-                if n.contains("instrumental") || n.contains("karaoke") || n.contains("backing") {
+                if (n.contains("instrumental") || n.contains("karaoke") || n.contains("backing"))
+                    && artistsMatch(track.artist, t.artist) {
                     if !candidates.contains(t) { candidates.append(t) }
                 }
             }
@@ -322,9 +489,15 @@ final class PersonalizeEngine: ObservableObject {
                               sourceName: track.name, sourceArtist: track.artist)
     }
 
-    /// Play the instrumental — the track name and timeline switch to the instrumental's data.
+    /// Keep the original track playing during lookup, then move to the matching
+    /// instrumental timestamp once both karaoke resources are ready.
     private func present(_ pkg: KaraokePackage) async {
+        let source = currentTrack
+        let matchesSource = source?.name == pkg.sourceName && source?.artist == pkg.sourceArtist
+        let state = matchesSource ? await spotify.playerState() : nil
+        let position = state?.0 ?? 0
+        let wasPlaying = state?.2 ?? true
         karaoke = pkg
-        await play(track: pkg.instrumental)
+        await play(track: pkg.instrumental, positionMs: position, autoplay: wasPlaying)
     }
 }

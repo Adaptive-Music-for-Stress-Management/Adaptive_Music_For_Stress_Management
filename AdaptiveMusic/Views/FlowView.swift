@@ -112,9 +112,11 @@ struct FlowView: View {
                 .font(.system(size: 24, weight: .semibold))
             HStack(spacing: 12) {
                 flowButton("Yes", subtitle: "Resting norms · 60 BPM · 20 ms") {
+                    camera.resetDetector()
                     hub.startSession(stressed: true)
                 }
                 flowButton("No", subtitle: "Calibrate from your first 30 s") {
+                    camera.resetDetector()
                     hub.startSession(stressed: false)
                 }
             }

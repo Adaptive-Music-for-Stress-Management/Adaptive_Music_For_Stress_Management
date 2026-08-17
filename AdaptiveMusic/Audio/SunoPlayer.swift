@@ -3,10 +3,9 @@ import AVFoundation
 import Combine
 
 /// SUNO AI library player.
-///   bucket = clamp((BPM // 10) * 10, 60, 150)  -> BPM_folder/<bucket>/song_*.mp3
+///   bucket = clamp((BPM // 10) * 10 - 10, 60, 150)  -> BPM_folder/<bucket>/song_*.mp3
 ///   random song per bucket, no repeats until the whole folder (cycle of 3) has played,
-///   fade OUT - fade IN on every switch, and an AVAudioEngine tap so the Breathe circle
-///   can watch the actual waveform for amplitude spikes (beats).
+///   fade OUT - fade IN on every switch, and an AVAudioEngine tap for the waveform visualizer.
 final class SunoPlayer: NSObject, ObservableObject {
 
     @Published var playing = false
@@ -16,10 +15,6 @@ final class SunoPlayer: NSObject, ObservableObject {
     @Published var duration: Double = 0
     @Published var bucketOverride: Int? = nil       // Breathe forces the target bucket
 
-    /// Fires whenever a *new song* starts (Breathe waits for the next beat on this).
-    var onSongChange: (() -> Void)?
-    /// Live RMS energy of the playing audio, fed from the engine tap (for Breathe).
-    private(set) var currentEnergy: Float = 0
     /// Most recent waveform samples for the visualizer.
     private(set) var waveform: [Float] = Array(repeating: 0, count: 256)
 
@@ -65,17 +60,13 @@ final class SunoPlayer: NSObject, ObservableObject {
             guard let self, let data = buffer.floatChannelData?[0] else { return }
             let n = Int(buffer.frameLength)
             guard n > 0 else { return }
-            var sum: Float = 0
             var wf = [Float](repeating: 0, count: 256)
             let step = max(1, n / 256)
             for i in 0..<n {
-                sum += data[i] * data[i]
                 let slot = i / step
                 if slot < 256 { wf[slot] = data[i] }
             }
-            let energy = sqrt(sum / Float(n))
             DispatchQueue.main.async {                 // render thread must not race main-thread readers
-                self.currentEnergy = energy
                 self.waveform = wf
             }
         }
@@ -205,7 +196,6 @@ final class SunoPlayer: NSObject, ObservableObject {
                 self.playing = true
                 self.startNode(node)
                 self.ramp(node: node, to: 1.0, over: 1.1)
-                self.onSongChange?()
             } catch {
                 print("[suno] could not open \(url.lastPathComponent): \(error)")
             }

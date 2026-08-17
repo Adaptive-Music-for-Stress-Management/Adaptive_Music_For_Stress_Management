@@ -98,6 +98,28 @@ final class ClaudeService: ObservableObject {
         }
     }
 
+    /// Choose only from real Spotify playlist entries supplied by the app. The
+    /// position is the actual playlist offset, never an invented song or index.
+    func pickPlaylistPosition(candidates: [PlaylistTrackCandidate],
+                              label: StressLabel) async -> Int? {
+        guard keySet, !candidates.isEmpty else { return nil }
+        let goal = ClaudeService.goals[label] ?? ClaudeService.goals[.mild]!
+        let listing = candidates.map {
+            "\($0.position): \($0.track.artist) — \($0.track.name)"
+        }.joined(separator: "\n")
+        let ask = "The listener's stress level is \(label.rawValue). The therapeutic goal is to \(goal).\n" +
+                  "Choose the one most suitable song from this exact Spotify playlist. " +
+                  "You may choose ONLY one listed playlist position.\n\(listing)\n" +
+                  "Answer ONLY JSON: {\"index\": <listed playlist position>}"
+        guard let reply = try? await complete(ask, maxTokens: 60),
+              let start = reply.firstIndex(of: "{"), let end = reply.lastIndex(of: "}"), start < end,
+              let data = (try? JSONSerialization.jsonObject(
+                  with: Data(String(reply[start...end]).utf8))) as? [String: Any],
+              let index = data["index"] as? Int,
+              candidates.contains(where: { $0.position == index }) else { return nil }
+        return index
+    }
+
     /// Which of these candidate tracks is the best instrumental version? (index, or -1)
     func pickInstrumental(of track: String, by artist: String,
                           candidates: [SpotifyTrack]) async -> Int {
