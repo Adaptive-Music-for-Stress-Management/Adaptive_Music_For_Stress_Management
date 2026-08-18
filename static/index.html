@@ -50,7 +50,7 @@
       <div class="flow-opts">
         <button class="flow-opt" data-go="muse">
           <span class="fo-name">Muse 2 headband</span>
-          <span class="fo-desc">Stream EEG · BPM · HRV live via Petal Metrics</span>
+          <span class="fo-desc">Stream EEG · BPM · HRV directly through MuseLSL</span>
         </button>
         <button class="flow-opt" data-go="demo">
           <span class="fo-name">Demo mode</span>
@@ -63,14 +63,14 @@
   <section class="screen" id="scr-muse">
     <div class="flow-card">
       <h1>Muse 2 headband</h1>
-      <p class="flow-sub">Start <b>Petal Metrics</b> and stream OSC to this machine, then connect.</p>
+      <p class="flow-sub">Turn on your Muse 2 and make sure no other app is using it, then connect.</p>
       <div class="flow-opts">
         <button class="flow-opt" id="museConnectBtn">
           <span class="fo-name">Connect and read Muse 2 headband</span>
-          <span class="fo-desc mono" id="museOscHint">waiting on udp://127.0.0.1:14739</span>
+          <span class="fo-desc mono" id="museOscHint">Bluetooth scan · MuseLSL EEG + PPG</span>
         </button>
       </div>
-      <p class="flow-err" id="museErr" hidden>I apologize, but there was an error in connecting your Muse 2 Headband.</p>
+      <p class="flow-err" id="museErr" hidden>The Muse 2 could not be connected through MuseLSL.</p>
       <div class="flow-opts"><button class="flow-opt slim" data-go="input-back">← Back</button></div>
     </div>
   </section>

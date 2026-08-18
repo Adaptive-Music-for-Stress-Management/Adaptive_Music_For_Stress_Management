@@ -3,6 +3,8 @@ BPM_folder/
 __pycache__/
 *.pyc
 .DS_Store
+.venv/
+.eeg_cache/
 
 # Xcode
 xcuserdata/

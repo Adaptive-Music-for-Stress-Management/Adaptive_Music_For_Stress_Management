@@ -73,6 +73,9 @@ main{flex:1;display:grid;grid-template-columns:25% 1fr 30%;gap:12px;padding:12px
 .gval.glow{text-shadow:0 0 14px currentColor, 0 0 4px currentColor}
 .gplot{flex:1;position:relative;min-height:20px}
 .gplot canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.glegend{position:absolute;right:2px;bottom:0;display:flex;gap:6px;padding:1px 3px;
+         border-radius:4px;background:rgba(7,12,18,.62);font-family:var(--mono);
+         font-size:9px;font-weight:700;line-height:1.2;pointer-events:none}
 .gnosig{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
         font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--faint)}
 

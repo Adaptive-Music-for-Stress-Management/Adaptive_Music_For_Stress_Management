@@ -3,9 +3,9 @@
 Adaptive Music for Stress Management — computer edition.
 
 Signal path
-    Muse 2 headband ── Petal Metrics (OSC over UDP) ──► this server
-                                                        │  PPG peak detection -> BPM + HRV differential
-                                                        │  EEG -> left/right brain + left/right ear traces
+    Muse 2 headband ── MuseLSL (EEG 256 Hz + PPG 64 Hz) ──► this server
+                                                           │  PPG peak detection -> BPM + HRV differential
+                                                           │  EEG -> five bands + stress probability per channel
         demo mode (no hardware) ────────────────────────┤
                                                         ▼
                                        baseline -> 0-100 stress meter
@@ -16,7 +16,7 @@ Signal path
 Baseline
     "Are you stressed?"  YES -> population baseline: 60 BPM, 20 ms HRV differential
                          NO  -> average of the first 30 seconds of readings
-    EEG is displayed instantly (it is not part of the stress score for now).
+    EEG is displayed and classified immediately; only BPM and HRV are baselined.
 
 Music
     SUNO AI library:   BPM_folder/<60..150>/song_*.mp3 — bucket = clamp((bpm//10)*10 - 10, 60, 150),
@@ -39,6 +39,15 @@ import threading
 import webbrowser
 import urllib.parse
 
+from eeg_pipeline import (
+    BANDS,
+    EEG_CHANNELS,
+    EEGStressPredictor,
+    LiveEEGAnalyzer,
+    MUSE_EEG_RATE,
+    MUSE_PPG_RATE,
+)
+
 # ============================ CONFIG ============================
 ROOT       = os.path.dirname(os.path.abspath(__file__))
 MUSIC_DIR  = os.environ.get("STRESS_MUSIC", os.path.join(ROOT, "BPM_folder"))
@@ -48,10 +57,11 @@ STATIC_DIR = os.path.join(ROOT, "static")
 PORT = int(os.environ.get("PORT", "8000"))
 HOST = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
 
-# Petal Metrics streams OSC to localhost; set the SAME port in the Petal Metrics app.
-MUSE_OSC_HOST = os.environ.get("MUSE_OSC_HOST", "0.0.0.0")
-MUSE_OSC_PORT = int(os.environ.get("MUSE_OSC_PORT", "14739"))
-MUSE_CONNECT_TIMEOUT = float(os.environ.get("MUSE_CONNECT_TIMEOUT", "12"))   # s to wait for first packet
+MUSE_CONNECT_TIMEOUT = float(os.environ.get("MUSE_CONNECT_TIMEOUT", "30"))
+EEG_MODEL_PATH = os.environ.get(
+    "EEG_MODEL_PATH",
+    os.path.join(ROOT, "models", "eeg_stress_eegminer.pt"),
+)
 
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
@@ -61,8 +71,6 @@ SPOTIFY_SCOPES = ("streaming user-read-email user-read-private user-modify-playb
 
 BASELINE_SEC   = 30.0        # calibration window when the user is NOT stressed at start
 STRESSED_BASE  = {"bpm": 60.0, "hrv_diff": 20.0}   # population baseline when they ARE stressed
-BPM_SCALE      = 40.0        # +40 bpm over baseline = full-scale stress contribution
-HRVD_SCALE     = 15.0        # -15 ms of HRV differential below baseline = full-scale contribution
 EMA_ALPHA      = 0.30        # smoothing on the stress meter
 HRVD_EMA_ALPHA = 0.25        # smoothing on HRV differential used for scoring (graphs show raw)
 EEG_STALE_SEC  = 3.0         # EEG lead shows blank after this long without data
@@ -85,15 +93,13 @@ if not os.path.isdir(MUSIC_DIR) and os.path.isfile(MUSIC_ZIP):
 # ---------------------------------------------------------------------------
 # Signal hub
 # ---------------------------------------------------------------------------
-EEG_CHANNELS = ["left_ear", "left_brain", "right_brain", "right_ear"]   # TP9, AF7, AF8, TP10
-
 class Hub:
     def __init__(self):
         self.lock = threading.Lock()
         self.reset_session()
         self.input = None                  # "muse" | "demo" | None
-        self.osc_last_ts = 0.0             # last time ANY Muse OSC packet arrived
-        self.osc_started = False
+        self.muse_last_ts = 0.0            # last time any MuseLSL EEG packet arrived
+        self.muse_error = None
 
     def reset_session(self):
         now = time.time()
@@ -104,6 +110,8 @@ class Hub:
         self.beat_seq = 0                  # increments once per detected heartbeat (drives UI glow)
         self.rr_prev = None                # previous RR interval (ms)
         self.eeg = {c: None for c in EEG_CHANNELS}
+        self.eeg_bands = {c: {band: None for band in BANDS} for c in EEG_CHANNELS}
+        self.eeg_stressed_probability = {c: None for c in EEG_CHANNELS}
         self.eeg_ts = {c: 0.0 for c in EEG_CHANNELS}
         self.stressed_start = None         # True/False once the user answers
         self.baseline = None               # {"bpm":..., "hrv_diff":...} once frozen
@@ -125,13 +133,21 @@ def _stress_label(v):
 
 
 def _update_score_locked():
-    """Recompute the 0-100 meter from the current beat-derived readings. Call with lock held."""
-    if HUB.baseline is None or HUB.bpm is None:
+    """Apply the requested EEG + BPM + HRV score formula. Call with lock held.
+
+    EEG probabilities are expressed as percentages so the resulting value fits
+    the dashboard's existing 0–100 meter:
+      average(P(stressed) * 100) + BPM delta + HRV delta
+    """
+    if HUB.baseline is None or HUB.bpm is None or HUB.hrv_diff is None:
         return
-    terms = [max(0.0, min(1.0, (HUB.bpm - HUB.baseline["bpm"]) / BPM_SCALE))]
-    if HUB.hrv_diff_ema is not None:
-        terms.append(max(0.0, min(1.0, (HUB.baseline["hrv_diff"] - HUB.hrv_diff_ema) / HRVD_SCALE)))
-    raw = 100.0 * sum(terms) / len(terms)
+    probabilities = [HUB.eeg_stressed_probability[channel] for channel in EEG_CHANNELS]
+    if any(value is None for value in probabilities):
+        return
+    eeg_percent = 100.0 * sum(probabilities) / len(probabilities)
+    bpm_delta = HUB.bpm - HUB.baseline["bpm"]
+    hrv_delta = HUB.hrv_diff - HUB.baseline["hrv_diff"]
+    raw = max(0.0, min(100.0, eeg_percent + bpm_delta + hrv_delta))
     HUB.stress_raw = raw
     HUB.stress = raw if HUB.stress is None else (EMA_ALPHA * raw + (1 - EMA_ALPHA) * HUB.stress)
 
@@ -181,13 +197,36 @@ def push_eeg(tp9, af7, af8, tp10):
                 HUB.eeg[c] = float(v); HUB.eeg_ts[c] = now
 
 
+def push_eeg_metrics(raw_values, bands, stressed_probabilities, timestamp=None):
+    """Publish one analyzed four-channel EEG window and refresh the score."""
+    now = time.time() if timestamp is None else timestamp
+    with HUB.lock:
+        for channel in EEG_CHANNELS:
+            raw = raw_values.get(channel)
+            if raw is not None and math.isfinite(raw):
+                HUB.eeg[channel] = float(raw)
+            for band in BANDS:
+                value = bands.get(channel, {}).get(band)
+                if value is not None and math.isfinite(value):
+                    HUB.eeg_bands[channel][band] = float(value)
+            probability = stressed_probabilities.get(channel)
+            if probability is not None and math.isfinite(probability):
+                HUB.eeg_stressed_probability[channel] = max(0.0, min(1.0, float(probability)))
+            HUB.eeg_ts[channel] = now
+        _update_score_locked()
+
+
+_EEG_PREDICTOR = EEGStressPredictor(EEG_MODEL_PATH)
+_EEG_ANALYZER = LiveEEGAnalyzer(_EEG_PREDICTOR, push_eeg_metrics)
+
+
 # ---------------------------------------------------------------------------
-# Muse 2 via Petal Metrics (OSC).  Robust to address-prefix differences:
-# accepts /PetalStream/eeg, /muse/eeg, etc.  PPG -> heartbeats server-side.
+# Muse 2 via MuseLSL. EEG is consumed at its native 256 Hz; the separate
+# 64 Hz PPG stream is converted to heartbeat intervals server-side.
 # ---------------------------------------------------------------------------
 class PPGDetector:
     """Adaptive-threshold peak detector over the PPG stream -> beat timestamps.
-    ThreadingOSCUDPServer handles packets on worker threads, so sample() locks."""
+    The LSL reader and session reset can touch it concurrently, so sample() locks."""
     def __init__(self):
         self._lock = threading.Lock()
         self.reset()
@@ -195,7 +234,7 @@ class PPGDetector:
     def reset(self):
         """Discard detector state when a new input or baseline session begins."""
         # This method may be called before the first packet as well as while the
-        # OSC server is live, so keep it safe to call independently of sample().
+        # LSL reader is live, so keep it safe to call independently of sample().
         with getattr(self, "_lock", threading.Lock()):
             self._reset_locked()
 
@@ -228,49 +267,137 @@ class PPGDetector:
 
 _PPG = PPGDetector()
 
-def _floats(args):
-    return [float(a) for a in args if isinstance(a, (int, float)) and math.isfinite(float(a))]
+def _lsl_channel_labels(info):
+    labels = []
+    channel = info.desc().child("channels").child("channel")
+    for _ in range(info.channel_count()):
+        labels.append(channel.child_value("label"))
+        channel = channel.next_sibling()
+    return labels
 
-def _osc_handler(address, *args):
-    if HUB.input != "muse":            # Petal may keep streaming while demo mode is active
-        return
-    HUB.osc_last_ts = time.time()
-    addr = address.lower()
-    vals = _floats(args)
-    if addr.endswith("/eeg") or "/eeg" in addr:
-        if len(vals) >= 4:
-            tp9, af7, af8, tp10 = vals[-4:]        # Muse order: TP9, AF7, AF8, TP10
-            push_eeg(tp9, af7, af8, tp10)
-    elif addr.endswith("/ppg") or "/ppg" in addr:
-        if vals:
-            # Petal streams [sample_id, timestamps..., ambient, IR, red]; IR carries the pulse.
-            v = vals[-2] if len(vals) >= 3 else vals[-1]
-            _PPG.sample(v, time.time())
-    elif "heart" in addr or addr.endswith("/hr"):
-        if vals and 30.0 <= vals[-1] <= 220.0:
-            register_beat(time.time(), bpm=vals[-1])
 
-def start_osc():
-    """Start the OSC listener once. Returns True if listening."""
-    if HUB.osc_started:
-        return True
-    try:
-        from pythonosc.dispatcher import Dispatcher
-        from pythonosc.osc_server import ThreadingOSCUDPServer
-    except ImportError:
-        print("[muse] python-osc not installed — `pip install python-osc`")
-        return False
-    try:
-        disp = Dispatcher()
-        disp.set_default_handler(_osc_handler)
-        server = ThreadingOSCUDPServer((MUSE_OSC_HOST, MUSE_OSC_PORT), disp)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        HUB.osc_started = True
-        print(f"[muse] OSC listener on udp://{MUSE_OSC_HOST}:{MUSE_OSC_PORT} (point Petal Metrics here)")
-        return True
-    except Exception as e:
-        print(f"[muse] could not open OSC port {MUSE_OSC_PORT}: {e}")
-        return False
+class MuseLSLService:
+    """Start MuseLSL when needed, then consume its synchronized EEG and PPG outlets."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._reader_thread = None
+        self._producer_thread = None
+
+    def start(self):
+        with self._lock:
+            if self._reader_thread is not None and self._reader_thread.is_alive():
+                return True
+            with HUB.lock:
+                HUB.muse_error = None
+            self._reader_thread = threading.Thread(target=self._run, daemon=True, name="muse-lsl-reader")
+            self._reader_thread.start()
+            return True
+
+    def _set_error(self, message):
+        print(f"[muse] {message}")
+        with HUB.lock:
+            HUB.muse_error = message
+
+    def _start_producer(self):
+        with self._lock:
+            if self._producer_thread is not None and self._producer_thread.is_alive():
+                return
+            self._producer_thread = threading.Thread(
+                target=self._produce,
+                daemon=True,
+                name="muse-lsl-producer",
+            )
+            self._producer_thread.start()
+
+    def _produce(self):
+        try:
+            from muselsl import list_muses, stream
+
+            devices = list_muses()
+            if not devices:
+                self._set_error("No Muse headband was found over Bluetooth.")
+                return
+            device = devices[0]
+            print(f"[muse] connecting MuseLSL to {device.get('name') or device.get('address')} ...")
+            stream(device["address"], ppg_enabled=True, retries=2)
+        except Exception as exc:
+            self._set_error(f"MuseLSL could not start: {exc}")
+
+    @staticmethod
+    def _resolve_stream(resolve_byprop, stream_type, timeout):
+        streams = resolve_byprop("type", stream_type, timeout=timeout)
+        return streams[0] if streams else None
+
+    def _run(self):
+        try:
+            from pylsl import StreamInlet, proc_clocksync, proc_dejitter, resolve_byprop
+        except ImportError:
+            self._set_error("MuseLSL dependencies are missing. Run `pip install -r requirements.txt`.")
+            return
+
+        try:
+            eeg_info = self._resolve_stream(resolve_byprop, "EEG", 1.0)
+            if eeg_info is None:
+                self._start_producer()
+                eeg_info = self._resolve_stream(resolve_byprop, "EEG", MUSE_CONNECT_TIMEOUT)
+            if eeg_info is None:
+                self._set_error("No MuseLSL EEG stream appeared before the connection timeout.")
+                return
+            ppg_info = self._resolve_stream(resolve_byprop, "PPG", 10.0)
+            if ppg_info is None:
+                self._set_error("Muse 2 EEG connected, but its PPG stream is unavailable.")
+                return
+
+            eeg_rate = float(eeg_info.nominal_srate())
+            ppg_rate = float(ppg_info.nominal_srate())
+            if not math.isclose(eeg_rate, MUSE_EEG_RATE, abs_tol=0.5):
+                self._set_error(f"Muse EEG reported {eeg_rate:g} Hz instead of 256 Hz.")
+                return
+            if not math.isclose(ppg_rate, MUSE_PPG_RATE, abs_tol=0.5):
+                self._set_error(f"Muse PPG reported {ppg_rate:g} Hz instead of 64 Hz.")
+                return
+
+            labels = _lsl_channel_labels(eeg_info)
+            required = ("TP9", "AF7", "AF8", "TP10")
+            if all(label in labels for label in required):
+                eeg_indices = [labels.index(label) for label in required]
+            elif eeg_info.channel_count() >= 4:
+                eeg_indices = [0, 1, 2, 3]
+            else:
+                self._set_error("Muse EEG stream does not contain all four required channels.")
+                return
+
+            flags = proc_clocksync | proc_dejitter
+            eeg_inlet = StreamInlet(eeg_info, max_buflen=12, processing_flags=flags)
+            ppg_inlet = StreamInlet(ppg_info, max_buflen=12, processing_flags=flags)
+            _EEG_ANALYZER.reset()
+            _PPG.reset()
+            print("[muse] MuseLSL live: EEG 256 Hz (TP9/AF7/AF8/TP10), PPG 64 Hz")
+
+            while HUB.input == "muse":
+                eeg_samples, _ = eeg_inlet.pull_chunk(timeout=0.08, max_samples=128)
+                if eeg_samples:
+                    ordered = [[sample[index] for index in eeg_indices] for sample in eeg_samples]
+                    now = time.time()
+                    _EEG_ANALYZER.add_samples(ordered, sample_rate=eeg_rate, now=now)
+                    with HUB.lock:
+                        HUB.muse_last_ts = now
+                        HUB.muse_error = None
+
+                ppg_samples, ppg_timestamps = ppg_inlet.pull_chunk(timeout=0.0, max_samples=64)
+                if ppg_samples:
+                    wall_offset = time.time() - ppg_timestamps[-1]
+                    for sample, sample_time in zip(ppg_samples, ppg_timestamps):
+                        if len(sample) >= 2:
+                            # MuseLSL order is ambient, infrared, red; infrared
+                            # normally gives the cleanest pulse waveform.
+                            _PPG.sample(float(sample[1]), float(sample_time) + wall_offset)
+        except Exception as exc:
+            self._set_error(f"MuseLSL stream stopped: {exc}")
+
+
+_MUSE_LSL = MuseLSLService()
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +425,8 @@ def _demo_loop():
         jitter = max(2.0, (34.0 - 26.0 * arousal)) * abs(rng.gauss(0, 1))
         register_beat(time.time(), rr_ms=rr + rng.choice((-1, 1)) * jitter * 0.5)
 
-        # EEG between beats at ~10 Hz: alpha-dominant when calm, beta-dominant when aroused
+        # EEG between beats at ~10 Hz: alpha-dominant when calm, beta/gamma
+        # dominant when aroused, with one stressed probability per channel.
         beat_gap = rr / 1000.0
         t_end = time.time() + beat_gap
         while not _demo_stop.is_set() and time.time() < t_end:
@@ -309,7 +437,20 @@ def _demo_loop():
                     a = (1.2 - arousal) * 40 * math.sin(2 * math.pi * 10 * (now + phase) + seed)
                     b = (0.3 + arousal) * 25 * math.sin(2 * math.pi * 22 * (now + phase) + seed * 2)
                     return a + b + rng.gauss(0, 8)
-                push_eeg(chan(1.0), chan(2.0), chan(3.0), chan(4.0))
+                values = dict(zip(EEG_CHANNELS, (chan(1.0), chan(2.0), chan(3.0), chan(4.0))))
+                bands = {}
+                probabilities = {}
+                for index, channel in enumerate(EEG_CHANNELS):
+                    wobble = rng.gauss(0, 0.5) + index * 0.15
+                    bands[channel] = {
+                        "delta": 7.0 + 4.0 * arousal + wobble,
+                        "theta": 9.0 + 2.0 * arousal + wobble,
+                        "alpha": 18.0 - 10.0 * arousal + wobble,
+                        "beta": 7.0 + 13.0 * arousal + wobble,
+                        "gamma": 2.0 + 10.0 * arousal + wobble,
+                    }
+                    probabilities[channel] = max(0.02, min(0.98, 0.05 + 0.90 * arousal + index * 0.01))
+                push_eeg_metrics(values, bands, probabilities, timestamp=now)
             time.sleep(0.02)
 
 def start_demo():
@@ -350,7 +491,7 @@ def index(request: Request):
 
 @app.post("/api/input")
 async def api_input(request: Request):
-    """Select the computer input: Muse 2 (Petal Metrics OSC) or demo mode."""
+    """Select the computer input: Muse 2 through MuseLSL or demo mode."""
     try:
         body = await request.json()
     except Exception:
@@ -363,20 +504,25 @@ async def api_input(request: Request):
         HUB.input = choice
         HUB.reset_session()
     _PPG.reset()
+    _EEG_ANALYZER.reset()
 
     if choice == "demo":
         start_demo()
         return JSONResponse({"ok": True, "input": "demo"})
 
-    # Muse: open the OSC port and wait for Petal Metrics data to actually arrive.
-    if not start_osc():
+    # Muse: start or attach to MuseLSL, then require an actual 256 Hz EEG packet.
+    if not _MUSE_LSL.start():
         return JSONResponse({"ok": False, "error": "muse_connect_failed"})
     t0 = time.time()
     while time.time() - t0 < MUSE_CONNECT_TIMEOUT:
-        if HUB.osc_last_ts > t0:
+        if HUB.muse_last_ts > t0:
             return JSONResponse({"ok": True, "input": "muse"})
+        if HUB.muse_error:
+            return JSONResponse({"ok": False, "error": "muse_connect_failed",
+                                 "detail": HUB.muse_error})
         await asyncio.sleep(0.25)
-    return JSONResponse({"ok": False, "error": "muse_connect_failed"})
+    return JSONResponse({"ok": False, "error": "muse_connect_failed",
+                         "detail": HUB.muse_error or "MuseLSL connection timed out."})
 
 
 @app.post("/api/baseline")
@@ -395,6 +541,7 @@ async def api_baseline(request: Request):
         if stressed:
             HUB.baseline = dict(STRESSED_BASE)
     _PPG.reset()
+    _EEG_ANALYZER.reset()
     return JSONResponse({"ok": True, "stressed": stressed,
                          "baseline": HUB.baseline, "calibration_sec": 0 if stressed else BASELINE_SEC})
 
@@ -403,32 +550,51 @@ def snapshot():
     now = time.time()
     with HUB.lock:
         beats_fresh = (now - HUB.last_beat_ts) < BEAT_STALE_SEC and HUB.bpm is not None
-        eeg_out, eeg_active = {}, {}
+        eeg_out, eeg_active, eeg_bands_out, eeg_stress_out = {}, {}, {}, {}
         for c in EEG_CHANNELS:
             fresh = (now - HUB.eeg_ts[c]) < EEG_STALE_SEC and HUB.eeg[c] is not None
             eeg_active[c] = fresh
             eeg_out[c] = round(HUB.eeg[c], 2) if fresh else None
+            eeg_bands_out[c] = {
+                band: round(HUB.eeg_bands[c][band], 3)
+                if fresh and HUB.eeg_bands[c][band] is not None else None
+                for band in BANDS
+            }
+            probability = HUB.eeg_stressed_probability[c]
+            eeg_stress_out[c] = {
+                "label": "Stressed",
+                "probability": round(probability * 100.0, 1),
+            } if fresh and probability is not None else None
         calibrating = (HUB.stressed_start is False and HUB.baseline is None)
         cal_left = None
         if calibrating and HUB.base_t0 is not None:
             cal_left = max(0.0, BASELINE_SEC - (now - HUB.base_t0))
         elif calibrating:
             cal_left = BASELINE_SEC
-        stress = round(HUB.stress, 1) if (HUB.stress is not None and not calibrating) else None
+        all_eeg_fresh = all(eeg_active.values())
+        stress = round(HUB.stress, 1) if (
+            HUB.stress is not None and not calibrating and beats_fresh and all_eeg_fresh
+        ) else None
         stress_label = _stress_label(stress)
         return {
             "input": HUB.input,
             "bpm": round(HUB.bpm, 1) if beats_fresh else None,
             "hrv_diff": round(HUB.hrv_diff, 1) if (beats_fresh and HUB.hrv_diff is not None) else None,
             "beat_seq": HUB.beat_seq,
-            "eeg": eeg_out, "eeg_active": eeg_active,
+            "eeg": eeg_out,
+            "eeg_bands": eeg_bands_out,
+            "eeg_stress": eeg_stress_out,
+            "eeg_active": eeg_active,
             "stress": stress,
             "stress_label": stress_label,
             "calibrating": calibrating,
             "calibration_left": None if cal_left is None else round(cal_left, 1),
             "baseline": HUB.baseline,
             "bpm_folders": _bpm_folders_for_stress_label(stress_label),
-            "muse_streaming": (now - HUB.osc_last_ts) < 5.0,
+            "muse_streaming": (now - HUB.muse_last_ts) < 5.0,
+            "muse_error": HUB.muse_error,
+            "eeg_model_ready": _EEG_PREDICTOR.available,
+            "eeg_model_error": _EEG_PREDICTOR.load_error,
             "session_sec": int(now - HUB.session_t0),
         }
 
@@ -991,7 +1157,7 @@ async def api_karaoke(request: Request):
 if __name__ == "__main__":
     url = f"http://127.0.0.1:{PORT}"
     print(f"[app] Adaptive Music dashboard at {url}")
-    print(f"[muse] Petal Metrics should stream OSC to udp://127.0.0.1:{MUSE_OSC_PORT}")
+    print("[muse] MuseLSL will scan Bluetooth for Muse 2 EEG (256 Hz) and PPG (64 Hz)")
     try:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     except Exception:

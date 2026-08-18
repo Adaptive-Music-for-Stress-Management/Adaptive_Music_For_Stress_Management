@@ -7,14 +7,14 @@ Two editions live in this repository:
 
 | Edition | Branch | What it is |
 |---|---|---|
-| **Computer** | `final_computer` | Python web dashboard · Muse 2 headband (Petal Metrics) or demo mode |
+| **Computer** | `final_computer` | Python web dashboard · Muse 2 headband (MuseLSL) or demo mode |
 | **Mobile** | `final_mobile` | Native iOS app (open in Xcode) · camera-PPG reader or Apple Watch streaming |
 
 This branch carries both: the computer app at the repo root and the Xcode project in
 `AdaptiveMusicMobile/`.
 
 ```
- Muse 2 ── Petal Metrics (OSC) ──►┐
+ Muse 2 ── MuseLSL (EEG + PPG) ──►┐
  iPhone camera + flashlight ─────►│  BPM · HRV differential · EEG
  Apple Watch workout session ────►┘        │
                                            ▼
@@ -38,10 +38,11 @@ This branch carries both: the computer app at the repo root and the Xcode projec
 
 ## The dashboard
 
-- **Graphs** — six compact graphs: BPM (sampled once per heartbeat), HRV differential
-  (needs three heartbeats to start), and four EEG channels — right brain (AF8), left
-  brain (AF7), right ear (TP10), left ear (TP9). Inactive inputs stay blank. Each
-  graph shows its current value, glowing on every BPM reading.
+- **Graphs** — BPM (sampled once per heartbeat), HRV differential (needs three
+  heartbeats to start), and four EEG channels — right brain (AF8), left brain (AF7),
+  right ear (TP10), left ear (TP9). Each EEG graph contains five simultaneous band-power
+  traces (Delta 1–4 Hz, Theta 4–8 Hz, Alpha 8–13 Hz, Beta 13–30 Hz, Gamma 30–45 Hz)
+  and the channel's Braindecode `Stressed` probability. Inactive inputs stay blank.
 - **Meter** — the stress label (Calm / Mild-stress / Stressed) above the actual meter
   value, colored green / yellow / red, over a horizontal meter with all three labels.
   The empty card below the meter is where the Relief UI renders.
@@ -67,13 +68,19 @@ This branch carries both: the computer app at the repo root and the Xcode projec
 ## Running the computer edition
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python3 server.py            # opens http://127.0.0.1:8000
 ```
 
-- **Muse 2** — start [Petal Metrics](https://docs.petal.tech/), stream **OSC** to
-  `127.0.0.1:14739` (set `MUSE_OSC_PORT` to change), pair the headband, then click
-  *Connect and read Muse 2 headband* in the dashboard.
+- **Muse 2** — turn on the headband, make sure no other phone/computer app is connected
+  to it, then click *Connect and read Muse 2 headband*. The server uses
+  [MuseLSL](https://github.com/alexandrebarachant/muse-lsl) directly and consumes all
+  native TP9/AF7/AF8/TP10 EEG samples at 256 Hz plus the 64 Hz infrared PPG stream.
+  BPM and successive-RR HRV are derived from PPG. On macOS, allow Bluetooth access for
+  Terminal/Python if prompted. The server can also attach to an already-running
+  `muselsl stream --ppg` process.
 - **Demo mode** — no hardware needed; coherent simulated biosignals drive everything.
 - **Spotify** — create an app at <https://developer.spotify.com/dashboard>, add
   `http://127.0.0.1:8000/callback` as a redirect URI, then:
@@ -87,6 +94,44 @@ python3 server.py            # opens http://127.0.0.1:8000
 > **Git LFS**: `BPM_folder.zip` (~105 MB) is stored with Git LFS — run `git lfs pull`
 > if you only got a 134-byte pointer file. The server auto-extracts it on first run.
 
+## EEG model and stress score
+
+The bundled `models/eeg_stress_eegminer.pt` contains four location-specific
+[Braindecode](https://github.com/braindecode/braindecode) EEGMiner classifiers. They
+use five learnable magnitude filters initialized to the same Delta/Theta/Alpha/Beta/Gamma
+bands shown in the UI. Training reads only these folders from the bundled EDF archive:
+
+| Dataset folder | App class | EDF electrode mapped to Muse |
+|---|---|---|
+| Participants Listening to Relaxing Music | Calm | AF3→AF7, T7→TP9, AF4→AF8, T8→TP10 |
+| Complex Mathematical Problem solving (CMPS) | Mild-stress | same mapping |
+| Horrer Video Stimulation | Stressed | same mapping |
+
+Pz, non-EEG EDF signals, the Stroop folder, and the Trier folder are discarded. EDF
+recordings are 128 Hz; live Muse data remains buffered at its native 256 Hz and only
+the four-second inference window is resampled to 128 Hz. Participants are separated
+between training and validation. Reproduce training with:
+
+```bash
+python3 train_eeg_model.py
+```
+
+Per-channel validation details are recorded in `models/eeg_stress_metrics.json`. The
+current participant-held-out mean accuracy is 46.1%, so this classifier is an
+experimental wellness signal, not a medical diagnostic.
+
+Once all four probabilities, BPM, HRV, and the BPM/HRV baseline are available, the
+0–100 meter applies the requested formula (probabilities expressed as percentages):
+
+```text
+clamp(average(channel P(stressed) × 100)
+      + (current BPM − baseline BPM)
+      + (current HRV − baseline HRV), 0, 100)
+```
+
+Choosing **No** during setup calibrates only BPM and HRV for 30 seconds. EEG is never
+included in baseline calibration.
+
 ## Running the mobile edition
 
 See [`AdaptiveMusicMobile/README.md`](AdaptiveMusicMobile/README.md) — or check out the
@@ -95,7 +140,10 @@ See [`AdaptiveMusicMobile/README.md`](AdaptiveMusicMobile/README.md) — or chec
 ## Repository layout (this branch)
 
 ```
-server.py               # FastAPI: OSC ingest, PPG beat detection, scoring, music APIs
+server.py               # FastAPI: MuseLSL ingest, PPG beat detection, scoring, music APIs
+eeg_pipeline.py         # 256 Hz buffers, five EEG bands, trained-model inference
+train_eeg_model.py      # three-class EDF training with participant-separated validation
+models/                 # trained EEGMiner weights and validation metrics
 claude_music.py         # Claude song-picking · Spotify search · instrumental finder · LRCLIB
 static/                 # the dashboard (index.html, style.css, app.js)
 BPM_folder.zip          # SUNO AI library (Git LFS) — auto-extracted on first run

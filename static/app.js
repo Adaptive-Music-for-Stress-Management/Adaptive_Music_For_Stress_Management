@@ -42,16 +42,19 @@ $("museConnectBtn").addEventListener("click", async () => {
   $("museErr").hidden = true;
   btn.classList.add("busy");
   btn.querySelector(".fo-desc").textContent = "connecting…";
-  let ok = false;
+  let ok = false, detail = "";
   try {
     const r = await fetch("/api/input", {method:"POST", headers:{"Content-Type":"application/json"},
                                          body: JSON.stringify({input:"muse"})});
-    ok = (await r.json()).ok;
+    const payload = await r.json();
+    ok = payload.ok;
+    detail = payload.detail || "";
   } catch(e) {}
   btn.classList.remove("busy");
   if (ok) showScreen("scr-stressed");
   else {
-    btn.querySelector(".fo-desc").textContent = "waiting on udp://127.0.0.1:14739";
+    btn.querySelector(".fo-desc").textContent = "scan again for Muse 2";
+    $("museErr").textContent = detail || "The Muse 2 could not be connected through MuseLSL.";
     $("museErr").hidden = false;
   }
 });
@@ -130,11 +133,18 @@ function updateChrome(s) {
 const GRAPHS = [
   {key:"bpm",        name:"BPM",                   color:css("--c-bpm"), dec:0, perBeat:true},
   {key:"hrv_diff",   name:"HRV DIFFERENTIAL · ms", color:css("--c-hrv"), dec:0, perBeat:true},
-  {key:"right_brain",name:"EEG RIGHT BRAIN · µV",  color:css("--c-rb"),  dec:1, eeg:true},
-  {key:"left_brain", name:"EEG LEFT BRAIN · µV",   color:css("--c-lb"),  dec:1, eeg:true},
-  {key:"right_ear",  name:"EEG RIGHT EAR · µV",    color:css("--c-re"),  dec:1, eeg:true},
-  {key:"left_ear",   name:"EEG LEFT EAR · µV",     color:css("--c-le"),  dec:1, eeg:true},
+  {key:"right_brain",name:"EEG RIGHT BRAIN · BAND POWER", color:css("--c-rb"), eeg:true},
+  {key:"left_brain", name:"EEG LEFT BRAIN · BAND POWER",  color:css("--c-lb"), eeg:true},
+  {key:"right_ear",  name:"EEG RIGHT EAR · BAND POWER",   color:css("--c-re"), eeg:true},
+  {key:"left_ear",   name:"EEG LEFT EAR · BAND POWER",    color:css("--c-le"), eeg:true},
 ];
+const EEG_BANDS = Object.freeze([
+  {key:"delta", name:"δ", color:"#7aa2ff"},
+  {key:"theta", name:"θ", color:"#42d8dc"},
+  {key:"alpha", name:"α", color:"#64e28b"},
+  {key:"beta",  name:"β", color:"#ffd166"},
+  {key:"gamma", name:"γ", color:"#f58bff"},
+]);
 const NPTS = 140;
 const tiles = {};
 {
@@ -142,16 +152,26 @@ const tiles = {};
   for (const g of GRAPHS) {
     const tile = document.createElement("div");
     tile.className = "gtile";
+    const legend = g.eeg ? `<div class="glegend">${EEG_BANDS.map(b =>
+      `<span style="color:${b.color}">${b.name}</span>`).join("")}</div>` : "";
     tile.innerHTML =
       `<div class="gtop"><span class="gname">${g.name}</span>` +
       `<span class="gval" id="gv-${g.key}" style="color:${g.color}">--</span></div>` +
-      `<div class="gplot"><canvas></canvas><div class="gnosig" id="gn-${g.key}" hidden>NO&nbsp;READING</div></div>`;
+      `<div class="gplot"><canvas></canvas>${legend}<div class="gnosig" id="gn-${g.key}" hidden>NO&nbsp;READING</div></div>`;
     stack.appendChild(tile);
     const cv = tile.querySelector("canvas");
-    tiles[g.key] = {g, cv, ctx: cv.getContext("2d"), buf: [], active: false};
+    const bandBufs = Object.fromEntries(EEG_BANDS.map(band => [band.key, []]));
+    tiles[g.key] = {g, cv, ctx: cv.getContext("2d"), buf: [], bandBufs, active: false};
   }
 }
 function pushPoint(t, v) { t.buf.push(v); if (t.buf.length > NPTS) t.buf.shift(); }
+function pushBandPoints(t, values) {
+  for (const band of EEG_BANDS) {
+    const buf = t.bandBufs[band.key];
+    buf.push(Number(values[band.key]));
+    if (buf.length > NPTS) buf.shift();
+  }
+}
 function glowValues() {
   for (const g of GRAPHS) {
     const el = $("gv-" + g.key);
@@ -161,19 +181,28 @@ function glowValues() {
 function updateGraphs(s, beat) {
   for (const g of GRAPHS) {
     const t = tiles[g.key];
-    let v = null, active = false;
-    if (g.eeg) { v = s.eeg ? s.eeg[g.key] : null; active = !!(s.eeg_active && s.eeg_active[g.key]); }
+    let v = null, active = false, bands = null;
+    if (g.eeg) {
+      bands = s.eeg_bands ? s.eeg_bands[g.key] : null;
+      active = !!(s.eeg_active && s.eeg_active[g.key] && bands &&
+                  EEG_BANDS.every(band => bands[band.key] != null));
+    }
     else       { v = s[g.key]; active = v != null; }
     t.active = active;
     const valEl = $("gv-" + g.key);
     $("gn-" + g.key).hidden = active;
     if (!active) {
-      valEl.textContent = "--";
-      if (g.eeg) t.buf = [];               // blank graph with no reading
+      valEl.textContent = g.eeg ? "STRESSED --" : "--";
+      if (g.eeg) for (const band of EEG_BANDS) t.bandBufs[band.key] = [];
     } else {
-      valEl.textContent = Number(v).toFixed(g.dec);
-      if (g.perBeat) { if (beat) pushPoint(t, v); }   // BPM-rate sampling
-      else pushPoint(t, v);                            // EEG at stream rate
+      if (g.eeg) {
+        const result = s.eeg_stress && s.eeg_stress[g.key];
+        valEl.textContent = result ? `STRESSED ${Number(result.probability).toFixed(1)}%` : "STRESSED --";
+        pushBandPoints(t, bands);
+      } else {
+        valEl.textContent = Number(v).toFixed(g.dec);
+        if (g.perBeat && beat) pushPoint(t, v);
+      }
     }
     drawTile(t);
   }
@@ -193,17 +222,23 @@ function drawTile(t) {
   ctx.beginPath();
   for (let i = 1; i <= 3; i++) { const y = Math.round(h * i / 4) + .5; ctx.moveTo(0, y); ctx.lineTo(w, y); }
   ctx.stroke();
-  if (!t.active || t.buf.length < 2) return;           // blank when no reading
-  let lo = Math.min(...t.buf), hi = Math.max(...t.buf);
+  const series = t.g.eeg ? EEG_BANDS.map(band => t.bandBufs[band.key]) : [t.buf];
+  const allValues = series.flat();
+  if (!t.active || allValues.length < 2) return;
+  let lo = Math.min(...allValues), hi = Math.max(...allValues);
   if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
   const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
-  ctx.strokeStyle = t.g.color; ctx.lineWidth = 2; ctx.lineJoin = "round";
-  ctx.beginPath();
-  t.buf.forEach((v, i) => {
-    const x = (i / (NPTS - 1)) * w, y = h - ((v - lo) / (hi - lo)) * h;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  series.forEach((values, seriesIndex) => {
+    ctx.strokeStyle = t.g.eeg ? EEG_BANDS[seriesIndex].color : t.g.color;
+    ctx.lineWidth = t.g.eeg ? 1.45 : 2;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    values.forEach((value, i) => {
+      const x = (i / (NPTS - 1)) * w, y = h - ((value - lo) / (hi - lo)) * h;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
   });
-  ctx.stroke();
 }
 
 /* ============================ 4 · meter ============================ */

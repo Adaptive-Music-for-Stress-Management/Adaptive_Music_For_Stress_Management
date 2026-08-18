@@ -2,4 +2,10 @@ fastapi
 uvicorn[standard]
 requests
 anthropic
-python-osc
+numpy>=1.26
+scipy>=1.11
+pylsl>=1.18,<2
+muselsl>=2.5,<3
+mne>=1.10,<2
+torch>=2.4
+braindecode>=1.7,<2
