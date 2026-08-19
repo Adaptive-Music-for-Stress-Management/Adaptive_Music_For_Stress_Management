@@ -1,0 +1,50 @@
+{
+  "n_outputs": 2,
+  "n_chans": 4,
+  "chs_info": null,
+  "n_times": 256,
+  "input_window_seconds": null,
+  "sfreq": 128.0,
+  "n_spat_filters": 4,
+  "feature_encoder__conv_layers_spec": [
+    [
+      8,
+      32,
+      8
+    ],
+    [
+      16,
+      2,
+      2
+    ],
+    [
+      32,
+      2,
+      2
+    ],
+    [
+      64,
+      2,
+      2
+    ],
+    [
+      64,
+      2,
+      2
+    ]
+  ],
+  "drop_prob": 0.1,
+  "feature_encoder__mode": "default",
+  "feature_encoder__conv_bias": false,
+  "activation": "torch.nn.modules.activation.GELU",
+  "pos_encoder__spat_dim": 30,
+  "pos_encoder__time_dim": 34,
+  "pos_encoder__sfreq_features": 1.0,
+  "pos_encoder__spat_kwargs": null,
+  "transformer__d_model": 64,
+  "transformer__num_encoder_layers": 8,
+  "transformer__num_decoder_layers": 4,
+  "transformer__nhead": 8,
+  "_init_feature_encoder": true,
+  "braindecode_version": "1.7.0"
+}

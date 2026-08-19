@@ -1,0 +1,547 @@
+{
+  "task": "binary self-reported stress classification (extreme groups)",
+  "class_mapping": {
+    "low_stress": [
+      "vlw",
+      "low"
+    ],
+    "high_stress": [
+      "hig",
+      "vhg"
+    ],
+    "excluded": [
+      "nor",
+      "calibration/eye-closing",
+      "Lab1",
+      "Lab2"
+    ]
+  },
+  "dataset": {
+    "name": "UNIVERSE",
+    "local_archive": "/Users/raniworklaptop/Adaptive_Music_For_Stress_Management/UNIVERSE_UN_101_to_UN_112.zip",
+    "archive_size_bytes": 10215721272,
+    "archive_zip_manifest_sha256": "3d6695b3089344a13ee62319cdb4a97849ff53f3edc752b74cb69ba09b420297",
+    "source_url": "https://zenodo.org/records/10371068",
+    "participant_range_in_archive": [
+      "UN_101",
+      "UN_112"
+    ]
+  },
+  "model": {
+    "architecture": "Braindecode SignalJEPA_PreLocal",
+    "pretrained_repository": "braindecode/signal-jepa_without-chans",
+    "pretrained_local_path": "/Users/raniworklaptop/Adaptive_Music_For_Stress_Management/models/signal-jepa_without-chans",
+    "pretrained_model_sha256": "be59962a22c936917c7e522a920c7f8b1721e5bc369da8243439b9128425071f",
+    "output_path": "/Users/raniworklaptop/Adaptive_Music_For_Stress_Management/models/universe-signal-jepa-stress-detector",
+    "total_parameters": 14374,
+    "pretrained_feature_encoder_parameters": 13840,
+    "channels": [
+      "TP9",
+      "AF7",
+      "AF8",
+      "TP10"
+    ],
+    "sample_rate_hz": 128.0,
+    "window_seconds": 2.0
+  },
+  "preprocessing": {
+    "archive_pipeline": [
+      "average reference",
+      "normalization",
+      "0.5-50 Hz bandpass",
+      "50 Hz notch"
+    ],
+    "resampling_hz": [
+      256.0,
+      128.0
+    ],
+    "window_stride_seconds": 2.0,
+    "overlap": false,
+    "per_channel_per_window_standardization": true,
+    "standardized_value_clip": [
+      -20.0,
+      20.0
+    ],
+    "max_windows_per_recording": 120
+  },
+  "training": {
+    "device": "mps",
+    "seed": 42,
+    "batch_size": 64,
+    "epochs_requested": 30,
+    "epochs_completed": 13,
+    "best_epoch": 1,
+    "warmup_epochs": 5,
+    "patience": 8,
+    "head_learning_rate": 0.005,
+    "backbone_learning_rate": 0.0001,
+    "dropout": 0.1,
+    "sampling": "equal class mass; equal recording mass within class",
+    "checkpoint_selection_metric": "validation recording ROC AUC, validation loss tie-break",
+    "feature_encoder_updated_in_exported_checkpoint": false,
+    "training_seconds": 4.340619802474976,
+    "history": [
+      {
+        "epoch": 1,
+        "phase": "head_warmup",
+        "training_loss": 0.692469174610941,
+        "validation_loss": 0.6851805241571532,
+        "validation_recording_balanced_accuracy": 0.8333333333333333,
+        "validation_recording_roc_auc": 0.6666666666666666,
+        "validation_selected_threshold": 0.49329832196235657
+      },
+      {
+        "epoch": 2,
+        "phase": "head_warmup",
+        "training_loss": 0.6916218696979054,
+        "validation_loss": 0.6858893405232165,
+        "validation_recording_balanced_accuracy": 0.7777777777777777,
+        "validation_recording_roc_auc": 0.5925925925925926,
+        "validation_selected_threshold": 0.49354198575019836
+      },
+      {
+        "epoch": 3,
+        "phase": "head_warmup",
+        "training_loss": 0.6914885307613172,
+        "validation_loss": 0.6915435067481465,
+        "validation_recording_balanced_accuracy": 0.7777777777777777,
+        "validation_recording_roc_auc": 0.6296296296296295,
+        "validation_selected_threshold": 0.4998891055583954
+      },
+      {
+        "epoch": 4,
+        "phase": "head_warmup",
+        "training_loss": 0.6909925531922725,
+        "validation_loss": 0.6966823955376943,
+        "validation_recording_balanced_accuracy": 0.7777777777777777,
+        "validation_recording_roc_auc": 0.6296296296296295,
+        "validation_selected_threshold": 0.5050674676895142
+      },
+      {
+        "epoch": 5,
+        "phase": "head_warmup",
+        "training_loss": 0.6891374529453747,
+        "validation_loss": 0.6950617498614722,
+        "validation_recording_balanced_accuracy": 0.7222222222222222,
+        "validation_recording_roc_auc": 0.5925925925925926,
+        "validation_selected_threshold": 0.5010961890220642
+      },
+      {
+        "epoch": 6,
+        "phase": "full_finetune",
+        "training_loss": 0.6880331432610227,
+        "validation_loss": 0.6893052409713467,
+        "validation_recording_balanced_accuracy": 0.6666666666666666,
+        "validation_recording_roc_auc": 0.4814814814814815,
+        "validation_selected_threshold": 0.49241316318511963
+      },
+      {
+        "epoch": 7,
+        "phase": "full_finetune",
+        "training_loss": 0.6902103520276254,
+        "validation_loss": 0.6899999422952533,
+        "validation_recording_balanced_accuracy": 0.5,
+        "validation_recording_roc_auc": 0.33333333333333337,
+        "validation_selected_threshold": 0.4942961037158966
+      },
+      {
+        "epoch": 8,
+        "phase": "full_finetune",
+        "training_loss": 0.6860424800922996,
+        "validation_loss": 0.6866737693134282,
+        "validation_recording_balanced_accuracy": 0.5555555555555556,
+        "validation_recording_roc_auc": 0.37037037037037035,
+        "validation_selected_threshold": 0.49022382497787476
+      },
+      {
+        "epoch": 9,
+        "phase": "full_finetune",
+        "training_loss": 0.6843375705836112,
+        "validation_loss": 0.7006360571210583,
+        "validation_recording_balanced_accuracy": 0.6111111111111112,
+        "validation_recording_roc_auc": 0.2222222222222222,
+        "validation_selected_threshold": 0.497300922870636
+      },
+      {
+        "epoch": 10,
+        "phase": "full_finetune",
+        "training_loss": 0.6810756030835603,
+        "validation_loss": 0.6901021704698602,
+        "validation_recording_balanced_accuracy": 0.5,
+        "validation_recording_roc_auc": 0.22222222222222224,
+        "validation_selected_threshold": 0.4845981001853943
+      },
+      {
+        "epoch": 11,
+        "phase": "full_finetune",
+        "training_loss": 0.6847954026439733,
+        "validation_loss": 0.716967448592186,
+        "validation_recording_balanced_accuracy": 0.5,
+        "validation_recording_roc_auc": 0.11111111111111112,
+        "validation_selected_threshold": 0.5073968768119812
+      },
+      {
+        "epoch": 12,
+        "phase": "full_finetune",
+        "training_loss": 0.682854868236341,
+        "validation_loss": 0.7007975242618057,
+        "validation_recording_balanced_accuracy": 0.5,
+        "validation_recording_roc_auc": 0.11111111111111112,
+        "validation_selected_threshold": 0.49274030327796936
+      },
+      {
+        "epoch": 13,
+        "phase": "full_finetune",
+        "training_loss": 0.6780017555805675,
+        "validation_loss": 0.7263266303680009,
+        "validation_recording_balanced_accuracy": 0.5,
+        "validation_recording_roc_auc": 0.14814814814814817,
+        "validation_selected_threshold": 0.511959433555603
+      }
+    ]
+  },
+  "software": {
+    "python": "3.12.13",
+    "torch": "2.13.0",
+    "braindecode": "1.7.0",
+    "mne": "1.12.1",
+    "scikit_learn": "1.9.0",
+    "numpy": "2.5.2"
+  },
+  "splits": {
+    "train": {
+      "participants": [
+        "UN_101",
+        "UN_104",
+        "UN_105",
+        "UN_106",
+        "UN_108",
+        "UN_109",
+        "UN_112"
+      ],
+      "n_participants": 7,
+      "n_recordings": 38,
+      "n_windows": 4560,
+      "recording_class_counts": {
+        "low_stress": 26,
+        "high_stress": 12
+      },
+      "window_class_counts": {
+        "low_stress": 3120,
+        "high_stress": 1440
+      }
+    },
+    "validation": {
+      "participants": [
+        "UN_102",
+        "UN_110"
+      ],
+      "n_participants": 2,
+      "n_recordings": 12,
+      "n_windows": 1440,
+      "recording_class_counts": {
+        "low_stress": 9,
+        "high_stress": 3
+      },
+      "window_class_counts": {
+        "low_stress": 1080,
+        "high_stress": 360
+      }
+    },
+    "test": {
+      "participants": [
+        "UN_107",
+        "UN_111"
+      ],
+      "n_participants": 2,
+      "n_recordings": 12,
+      "n_windows": 1440,
+      "recording_class_counts": {
+        "low_stress": 8,
+        "high_stress": 4
+      },
+      "window_class_counts": {
+        "low_stress": 960,
+        "high_stress": 480
+      }
+    }
+  },
+  "validation": {
+    "recording_level": {
+      "n": 12,
+      "class_counts": {
+        "low_stress": 9,
+        "high_stress": 3
+      },
+      "threshold": 0.49329832196235657,
+      "accuracy": 0.9166666666666666,
+      "balanced_accuracy": 0.8333333333333333,
+      "roc_auc": 0.6666666666666666,
+      "average_precision": 0.75,
+      "precision": 1.0,
+      "sensitivity_recall": 0.6666666666666666,
+      "specificity": 1.0,
+      "f1": 0.8,
+      "matthews_correlation": 0.7745966692414834,
+      "brier_score": 0.2458447150384191,
+      "log_loss": 0.684835864326289,
+      "confusion_matrix_rows_true_columns_predicted": [
+        [
+          9,
+          0
+        ],
+        [
+          1,
+          2
+        ]
+      ]
+    },
+    "threshold_selection_metric": "recording-level balanced accuracy",
+    "threshold_selection_score": 0.8333333333333333
+  },
+  "test": {
+    "loss": 0.6888098761439323,
+    "window_level": {
+      "n": 1440,
+      "class_counts": {
+        "low_stress": 960,
+        "high_stress": 480
+      },
+      "threshold": 0.49329832196235657,
+      "accuracy": 0.5131944444444444,
+      "balanced_accuracy": 0.4942708333333333,
+      "roc_auc": 0.48972005208333336,
+      "average_precision": 0.33488539596825656,
+      "precision": 0.32761310452418096,
+      "sensitivity_recall": 0.4375,
+      "specificity": 0.5510416666666667,
+      "f1": 0.3746654772524532,
+      "matthews_correlation": -0.010868641976428438,
+      "brier_score": 0.24783208582174848,
+      "log_loss": 0.6888099019066722,
+      "confusion_matrix_rows_true_columns_predicted": [
+        [
+          529,
+          431
+        ],
+        [
+          270,
+          210
+        ]
+      ]
+    },
+    "recording_level": {
+      "n": 12,
+      "class_counts": {
+        "low_stress": 8,
+        "high_stress": 4
+      },
+      "threshold": 0.49329832196235657,
+      "accuracy": 0.6666666666666666,
+      "balanced_accuracy": 0.5625,
+      "roc_auc": 0.3125,
+      "average_precision": 0.46388888888888885,
+      "precision": 0.5,
+      "sensitivity_recall": 0.25,
+      "specificity": 0.875,
+      "f1": 0.3333333333333333,
+      "matthews_correlation": 0.15811388300841897,
+      "brier_score": 0.24767458660772976,
+      "log_loss": 0.688496052892977,
+      "confusion_matrix_rows_true_columns_predicted": [
+        [
+          7,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ]
+    },
+    "recording_level_cluster_bootstrap_95_ci": {
+      "balanced_accuracy": {
+        "lower_95": 0.4,
+        "upper_95": 1.0,
+        "method": "participant_cluster_bootstrap",
+        "repetitions": 2000
+      },
+      "roc_auc": {
+        "lower_95": 0.1333333333333333,
+        "upper_95": 1.0,
+        "method": "participant_cluster_bootstrap",
+        "repetitions": 2000
+      },
+      "f1": {
+        "lower_95": 0.0,
+        "upper_95": 1.0,
+        "method": "participant_cluster_bootstrap",
+        "repetitions": 2000
+      }
+    },
+    "per_subject_recording_level": {
+      "UN_107": {
+        "n": 8,
+        "class_counts": {
+          "low_stress": 5,
+          "high_stress": 3
+        },
+        "threshold": 0.49329832196235657,
+        "accuracy": 0.5,
+        "balanced_accuracy": 0.4,
+        "roc_auc": 0.1333333333333333,
+        "average_precision": 0.30277777777777776,
+        "precision": 0.0,
+        "sensitivity_recall": 0.0,
+        "specificity": 0.8,
+        "f1": 0.0,
+        "matthews_correlation": -0.29277002188455997,
+        "brier_score": 0.24851324016937493,
+        "log_loss": 0.6901735502084049,
+        "confusion_matrix_rows_true_columns_predicted": [
+          [
+            4,
+            1
+          ],
+          [
+            3,
+            0
+          ]
+        ]
+      },
+      "UN_111": {
+        "n": 4,
+        "class_counts": {
+          "low_stress": 3,
+          "high_stress": 1
+        },
+        "threshold": 0.49329832196235657,
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "roc_auc": 1.0,
+        "average_precision": 1.0,
+        "precision": 1.0,
+        "sensitivity_recall": 1.0,
+        "specificity": 1.0,
+        "f1": 1.0,
+        "matthews_correlation": 1.0,
+        "brier_score": 0.2459972794844394,
+        "log_loss": 0.6851410582621211,
+        "confusion_matrix_rows_true_columns_predicted": [
+          [
+            3,
+            0
+          ],
+          [
+            0,
+            1
+          ]
+        ]
+      }
+    },
+    "recording_predictions": [
+      {
+        "record_id": "UN_107/Wild/hig_stress_hig_mw_4",
+        "subject": "UN_107",
+        "condition": "hig_stress_hig_mw_4",
+        "label": 1,
+        "probability": 0.4916152358055115,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/hig_stress_hig_mw_5",
+        "subject": "UN_107",
+        "condition": "hig_stress_hig_mw_5",
+        "label": 1,
+        "probability": 0.49075061082839966,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/hig_stress_hig_mw_9",
+        "subject": "UN_107",
+        "condition": "hig_stress_hig_mw_9",
+        "label": 1,
+        "probability": 0.4916512072086334,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/low_stress_hig_mw_1",
+        "subject": "UN_107",
+        "condition": "low_stress_hig_mw_1",
+        "label": 0,
+        "probability": 0.4911622703075409,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/low_stress_nor_mw_3",
+        "subject": "UN_107",
+        "condition": "low_stress_nor_mw_3",
+        "label": 0,
+        "probability": 0.4922400116920471,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/low_stress_nor_mw_7",
+        "subject": "UN_107",
+        "condition": "low_stress_nor_mw_7",
+        "label": 0,
+        "probability": 0.49165409803390503,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/low_stress_vhg_mw_8",
+        "subject": "UN_107",
+        "condition": "low_stress_vhg_mw_8",
+        "label": 0,
+        "probability": 0.49318453669548035,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_107/Wild/vlw_stress_nor_mw_2",
+        "subject": "UN_107",
+        "condition": "vlw_stress_nor_mw_2",
+        "label": 0,
+        "probability": 0.49335795640945435,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_111/Wild/hig_stress_hig_mw_5",
+        "subject": "UN_111",
+        "condition": "hig_stress_hig_mw_5",
+        "label": 1,
+        "probability": 0.4935155510902405,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_111/Wild/low_stress_low_mw_13",
+        "subject": "UN_111",
+        "condition": "low_stress_low_mw_13",
+        "label": 0,
+        "probability": 0.4926484227180481,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_111/Wild/low_stress_low_mw_7",
+        "subject": "UN_111",
+        "condition": "low_stress_low_mw_7",
+        "label": 0,
+        "probability": 0.4918762147426605,
+        "n_windows": 120
+      },
+      {
+        "record_id": "UN_111/Wild/low_stress_nor_mw_9",
+        "subject": "UN_111",
+        "condition": "low_stress_nor_mw_9",
+        "label": 0,
+        "probability": 0.4927656054496765,
+        "n_windows": 120
+      }
+    ]
+  },
+  "limitations": [
+    "Only UN_101--UN_112 were present in the supplied archive.",
+    "Neutral stress was excluded; this is an extreme-group task.",
+    "The test set contains only two participants.",
+    "Windows from a recording are correlated, so recording-level metrics are primary."
+  ]
+}
