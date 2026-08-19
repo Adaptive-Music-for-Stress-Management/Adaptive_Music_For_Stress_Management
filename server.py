@@ -241,6 +241,10 @@ _EEG_ANALYZER = LiveEEGAnalyzer(_EEG_PREDICTOR, push_eeg_metrics)
 class PPGDetector:
     """Adaptive-threshold peak detector over the PPG stream -> beat timestamps.
     The LSL reader and session reset can touch it concurrently, so sample() locks."""
+    ENVELOPE_DECAY = 0.99
+    TRIGGER_RATIO = 0.18
+    RELEASE_RATIO = 0.05
+
     def __init__(self):
         self._lock = threading.Lock()
         self.reset()
@@ -268,14 +272,16 @@ class PPGDetector:
     def _sample_locked(self, v, ts):
         self.dc = v if self.dc is None else 0.995 * self.dc + 0.005 * v
         x = v - self.dc
-        self.env = max(abs(x), self.env * 0.999, 1e-6)
-        thresh = 0.45 * self.env
+        # Let a contact/motion spike fall out quickly, then accept a much
+        # smaller positive excursion from the infrared pulse waveform.
+        self.env = max(abs(x), self.env * self.ENVELOPE_DECAY, 1e-6)
+        thresh = self.TRIGGER_RATIO * self.env
         if not self.above and x > thresh and self.prev <= thresh:
             self.above = True
             if self.last_peak and 0.30 <= (ts - self.last_peak) <= 2.0:
                 register_beat(ts, rr_ms=(ts - self.last_peak) * 1000.0)
             self.last_peak = ts
-        elif self.above and x < 0.1 * self.env:
+        elif self.above and x < self.RELEASE_RATIO * self.env:
             self.above = False
         self.prev = x
 

@@ -1,5 +1,6 @@
 """Focused regression checks for adaptive-music backend decisions."""
 
+import math
 import os
 import tempfile
 import unittest
@@ -42,6 +43,25 @@ class StressFolderTests(unittest.TestCase):
         self.assertIsNone(detector.dc)
         self.assertEqual(detector.last_peak, 0.0)
         self.assertFalse(detector.above)
+
+    def test_ppg_detector_recovers_from_contact_spike_and_detects_weak_pulses(self):
+        intervals = []
+        detector = server.PPGDetector()
+        detector.dc = 2_000_000.0
+        detector.env = 1_000.0
+        started = 100.0
+
+        def capture(_timestamp, rr_ms=None):
+            intervals.append(rr_ms)
+
+        with patch.object(server, "register_beat", side_effect=capture):
+            for index in range(64 * 8):
+                elapsed = index / 64.0
+                weak_pulse = 40.0 * math.sin(2.0 * math.pi * 1.25 * elapsed)
+                detector.sample(2_000_000.0 + weak_pulse, started + elapsed)
+
+        self.assertGreaterEqual(len(intervals), 3)
+        self.assertAlmostEqual(sum(intervals) / len(intervals), 800.0, delta=35.0)
 
 
 class PlaylistTests(unittest.TestCase):
