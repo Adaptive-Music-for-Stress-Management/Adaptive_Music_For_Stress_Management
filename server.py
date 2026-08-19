@@ -241,9 +241,10 @@ _EEG_ANALYZER = LiveEEGAnalyzer(_EEG_PREDICTOR, push_eeg_metrics)
 class PPGDetector:
     """Adaptive-threshold peak detector over the PPG stream -> beat timestamps.
     The LSL reader and session reset can touch it concurrently, so sample() locks."""
-    ENVELOPE_DECAY = 0.99
-    TRIGGER_RATIO = 0.18
-    RELEASE_RATIO = 0.05
+    # Deliberately tuned for very high sensitivity on weak Muse infrared pulses.
+    ENVELOPE_DECAY = 0.95
+    TRIGGER_RATIO = 0.05
+    RELEASE_RATIO = 0.01
 
     def __init__(self):
         self._lock = threading.Lock()
