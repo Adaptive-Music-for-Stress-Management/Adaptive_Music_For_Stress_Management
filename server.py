@@ -38,10 +38,6 @@ import zipfile
 import threading
 import webbrowser
 import urllib.parse
-from collections import deque
-
-import numpy as np
-from scipy.signal import butter, detrend, find_peaks, sosfiltfilt, welch
 
 from eeg_pipeline import (
     BANDS,
@@ -117,7 +113,6 @@ class Hub:
         self.eeg_bands = {c: {band: None for band in BANDS} for c in EEG_CHANNELS}
         self.eeg_stressed_probability = {c: None for c in EEG_CHANNELS}
         self.eeg_ts = {c: 0.0 for c in EEG_CHANNELS}
-        self.ppg_last_ts = 0.0
         self.stressed_start = None         # True/False once the user answers
         self.baseline = None               # {"bpm":..., "hrv_diff":...} once frozen
         self.base_t0 = None
@@ -244,28 +239,10 @@ _EEG_ANALYZER = LiveEEGAnalyzer(_EEG_PREDICTOR, push_eeg_metrics)
 # 64 Hz PPG stream is converted to heartbeat intervals server-side.
 # ---------------------------------------------------------------------------
 class PPGDetector:
-    """Robust multi-wavelength Muse PPG detector -> beat timestamps.
-
-    Muse sends ambient, infrared, and red optical samples at 64 Hz. Slow contact
-    and motion drift can be much larger than the pulse, so each analysis removes
-    the trend, band-passes 0.65--3.5 Hz, and selects the channel/polarity with the
-    clearest physiologically spaced peaks.
-    """
-
-    CHANNEL_NAMES = ("ambient", "infrared", "red")
-    MIN_SECONDS = 4.0
-    BUFFER_SECONDS = 10.0
-    ANALYSIS_INTERVAL = 0.25
-    MIN_RR_SECONDS = 0.30
-    MAX_RR_SECONDS = 2.0
-
-    def __init__(self, beat_callback=None, sample_rate=MUSE_PPG_RATE):
+    """Adaptive-threshold peak detector over the PPG stream -> beat timestamps.
+    The LSL reader and session reset can touch it concurrently, so sample() locks."""
+    def __init__(self):
         self._lock = threading.Lock()
-        self._beat_callback = beat_callback or register_beat
-        self.sample_rate = float(sample_rate)
-        self._bandpass = butter(
-            3, (0.65, 3.5), btype="bandpass", fs=self.sample_rate, output="sos"
-        )
         self.reset()
 
     def reset(self):
@@ -276,166 +253,31 @@ class PPGDetector:
             self._reset_locked()
 
     def _reset_locked(self):
-        length = max(1, int(round(self.sample_rate * self.BUFFER_SECONDS)))
-        self.timestamps = deque(maxlen=length)
-        self.samples = deque(maxlen=length)
-        self.last_analysis = 0.0
+        self.dc = None            # slow DC baseline
+        self.env = 1.0            # amplitude envelope
+        self.prev = 0.0
+        self.above = False
         self.last_peak = 0.0
-        self.selected_channel = None
-        self.selected_polarity = None
-        self.signal_quality = 0.0
 
-    def sample(self, values, ts):
-        """Add one Muse PPG sample (ambient, infrared, red)."""
-        if not math.isfinite(ts):
-            return
-        array = np.asarray(values, dtype=np.float64).reshape(-1)
-        row = np.full(3, np.nan, dtype=np.float64)
-        if array.size == 1:
-            row[1] = array[0]  # scalar callers are treated as infrared
-        else:
-            row[:min(3, array.size)] = array[:3]
-        if not np.isfinite(row).any():
+    def sample(self, v, ts):
+        if not math.isfinite(v):
             return
         with self._lock:
-            if self.timestamps and (
-                ts <= self.timestamps[-1] or ts - self.timestamps[-1] > 0.5
-            ):
-                self._reset_locked()
-            self.timestamps.append(float(ts))
-            self.samples.append(row)
-            if ts - self.last_analysis < self.ANALYSIS_INTERVAL:
-                return
-            self.last_analysis = float(ts)
-            self._analyze_locked()
+            self._sample_locked(v, ts)
 
-    def _candidate(self, signal, timestamps, channel_index, polarity):
-        finite = np.isfinite(signal)
-        if np.count_nonzero(finite) < 0.95 * signal.size:
-            return None
-        if not finite.all():
-            positions = np.arange(signal.size)
-            signal = np.interp(positions, positions[finite], signal[finite])
-        if np.ptp(signal) < 1e-6:
-            return None
-        filtered = sosfiltfilt(self._bandpass, detrend(signal, type="linear"))
-        robust_range = float(np.percentile(filtered, 95) - np.percentile(filtered, 5))
-        if not math.isfinite(robust_range) or robust_range < 1e-6:
-            return None
-        centered = filtered - np.median(filtered)
-        robust_sigma = 1.4826 * float(np.median(np.abs(centered)))
-        prominence = max(0.12 * robust_range, 0.75 * robust_sigma, 1e-6)
-        peaks, properties = find_peaks(
-            polarity * filtered,
-            distance=max(1, int(round(self.MIN_RR_SECONDS * self.sample_rate))),
-            prominence=prominence,
-        )
-        if peaks.size < 2:
-            return None
-        stable = (
-            (timestamps[peaks] >= timestamps[0] + 0.20)
-            & (timestamps[peaks] <= timestamps[-1] - 0.15)
-        )
-        peaks = peaks[stable]
-        prominences = properties["prominences"][stable]
-        if peaks.size < 2:
-            return None
-        intervals = np.diff(timestamps[peaks])
-        valid = (intervals >= self.MIN_RR_SECONDS) & (intervals <= self.MAX_RR_SECONDS)
-        if not np.any(valid):
-            return None
-        valid_intervals = intervals[valid]
-        median_interval = float(np.median(valid_intervals))
-        interval_cv = float(np.std(valid_intervals) / max(median_interval, 1e-6))
-        valid_ratio = float(np.mean(valid))
-        prominence_ratio = float(np.median(prominences) / max(robust_sigma, 1e-6))
-
-        # Reject narrow-band noise that happens to cross the peak threshold.
-        # A genuine pulse repeats at the detected RR lag and concentrates power
-        # around the corresponding heart frequency.
-        lag = int(round(median_interval * self.sample_rate))
-        correlations = []
-        for candidate_lag in range(max(1, lag - 2), min(filtered.size - 1, lag + 2) + 1):
-            left = centered[:-candidate_lag]
-            right = centered[candidate_lag:]
-            denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
-            if denominator > 1e-9:
-                correlations.append(float(np.dot(left, right) / denominator))
-        periodicity = max(correlations, default=0.0)
-        frequencies, density = welch(
-            filtered,
-            fs=self.sample_rate,
-            nperseg=min(256, filtered.size),
-            nfft=1024,
-        )
-        heart_band = (frequencies >= 0.65) & (frequencies <= 3.5)
-        target_frequency = 1.0 / max(median_interval, 1e-6)
-        target_band = heart_band & (np.abs(frequencies - target_frequency) <= 0.18)
-        band_power = float(np.sum(density[heart_band]))
-        spectral_concentration = float(np.sum(density[target_band]) / max(band_power, 1e-12))
-        if periodicity < 0.35 or spectral_concentration < 0.25:
-            return None
-        quality = (
-            2.0 * valid_ratio
-            + 2.0 * max(0.0, 1.0 - min(interval_cv, 1.0))
-            + 0.35 * min(prominence_ratio, 4.0)
-            + min(peaks.size / 6.0, 1.0)
-            + periodicity
-            + spectral_concentration
-        )
-        return {
-            "channel": channel_index,
-            "polarity": polarity,
-            "quality": quality,
-            "peak_times": timestamps[peaks],
-        }
-
-    def _analyze_locked(self):
-        minimum = int(round(self.sample_rate * self.MIN_SECONDS))
-        if len(self.timestamps) < minimum:
-            return
-        timestamps = np.asarray(self.timestamps, dtype=np.float64)
-        samples = np.asarray(self.samples, dtype=np.float64)
-        candidates = {}
-        for channel_index in range(samples.shape[1]):
-            for polarity in (1, -1):
-                candidate = self._candidate(
-                    samples[:, channel_index], timestamps, channel_index, polarity
-                )
-                if candidate is not None:
-                    candidates[(channel_index, polarity)] = candidate
-        if not candidates:
-            self.signal_quality = 0.0
-            return
-
-        best = max(candidates.values(), key=lambda item: item["quality"])
-        selected_key = None
-        if self.selected_channel is not None and self.selected_polarity is not None:
-            selected_key = (self.selected_channel, self.selected_polarity)
-        current = candidates.get(selected_key)
-        if current is None or (
-            self.last_peak
-            and timestamps[-1] - self.last_peak > 2.5
-            and best["quality"] > current["quality"] + 0.5
-        ):
-            current = best
-        self.selected_channel = current["channel"]
-        self.selected_polarity = current["polarity"]
-        self.signal_quality = float(current["quality"])
-
-        for peak_time in current["peak_times"]:
-            peak_time = float(peak_time)
-            if not self.last_peak:
-                self.last_peak = peak_time
-                continue
-            interval = peak_time - self.last_peak
-            if interval < self.MIN_RR_SECONDS:
-                continue  # the same peak shifted slightly after re-filtering
-            if interval > self.MAX_RR_SECONDS:
-                self.last_peak = peak_time  # reacquire without publishing a false RR
-                continue
-            self.last_peak = peak_time
-            self._beat_callback(peak_time, rr_ms=interval * 1000.0)
+    def _sample_locked(self, v, ts):
+        self.dc = v if self.dc is None else 0.995 * self.dc + 0.005 * v
+        x = v - self.dc
+        self.env = max(abs(x), self.env * 0.999, 1e-6)
+        thresh = 0.45 * self.env
+        if not self.above and x > thresh and self.prev <= thresh:
+            self.above = True
+            if self.last_peak and 0.30 <= (ts - self.last_peak) <= 2.0:
+                register_beat(ts, rr_ms=(ts - self.last_peak) * 1000.0)
+            self.last_peak = ts
+        elif self.above and x < 0.1 * self.env:
+            self.above = False
+        self.prev = x
 
 _PPG = PPGDetector()
 
@@ -539,16 +381,6 @@ class MuseLSLService:
             else:
                 self._set_error("Muse EEG stream does not contain all four required channels.")
                 return
-            ppg_labels = _lsl_channel_labels(ppg_info)
-            ppg_required = ("PPG1", "PPG2", "PPG3")
-            if all(label in ppg_labels for label in ppg_required):
-                ppg_indices = [ppg_labels.index(label) for label in ppg_required]
-            elif ppg_info.channel_count() >= 3:
-                ppg_indices = [0, 1, 2]
-            else:
-                self._set_error("Muse PPG stream does not contain all three optical channels.")
-                return
-
             flags = proc_clocksync | proc_dejitter
             eeg_inlet = StreamInlet(eeg_info, max_buflen=12, processing_flags=flags)
             ppg_inlet = StreamInlet(ppg_info, max_buflen=12, processing_flags=flags)
@@ -566,18 +398,14 @@ class MuseLSLService:
                         HUB.muse_last_ts = now
                         HUB.muse_error = None
 
-                ppg_samples, ppg_timestamps = ppg_inlet.pull_chunk(timeout=0.02, max_samples=128)
+                ppg_samples, ppg_timestamps = ppg_inlet.pull_chunk(timeout=0.0, max_samples=64)
                 if ppg_samples:
                     wall_offset = time.time() - ppg_timestamps[-1]
-                    last_wall_time = None
                     for sample, sample_time in zip(ppg_samples, ppg_timestamps):
-                        if all(index < len(sample) for index in ppg_indices):
-                            wall_time = float(sample_time) + wall_offset
-                            _PPG.sample([sample[index] for index in ppg_indices], wall_time)
-                            last_wall_time = wall_time
-                    if last_wall_time is not None:
-                        with HUB.lock:
-                            HUB.ppg_last_ts = last_wall_time
+                        if len(sample) >= 2:
+                            # MuseLSL order is ambient, infrared, red; infrared
+                            # normally gives the cleanest pulse waveform.
+                            _PPG.sample(float(sample[1]), float(sample_time) + wall_offset)
         except Exception as exc:
             self._set_error(f"MuseLSL stream stopped: {exc}")
 
@@ -785,7 +613,6 @@ def snapshot():
             "baseline": HUB.baseline,
             "bpm_folders": _bpm_folders_for_stress_label(stress_label),
             "muse_streaming": (now - HUB.muse_last_ts) < 5.0,
-            "ppg_streaming": (now - HUB.ppg_last_ts) < 2.0,
             "muse_error": HUB.muse_error,
             "eeg_model_ready": _EEG_PREDICTOR.available,
             "eeg_model_error": _EEG_PREDICTOR.load_error,

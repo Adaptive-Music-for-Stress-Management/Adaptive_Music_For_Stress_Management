@@ -78,12 +78,10 @@ python3 server.py            # opens http://127.0.0.1:8000
 - **Muse 2** — turn on the headband, make sure no other phone/computer app is connected
   to it, then click *Connect and read Muse 2 headband*. The server uses
   [MuseLSL](https://github.com/alexandrebarachant/muse-lsl) directly and consumes all
-  native TP9/AF7/AF8/TP10 EEG samples at 256 Hz plus the three-channel 64 Hz PPG stream.
-  BPM and successive-RR HRV are derived from all three PPG wavelengths: the server removes
-  optical drift, filters to the physiological heart-rate range, and automatically uses the
-  clearest channel and pulse polarity. On macOS, allow Bluetooth access for Terminal/Python
-  if prompted. The server can also attach to an already-running `muselsl stream --ppg`
-  process.
+  native TP9/AF7/AF8/TP10 EEG samples at 256 Hz plus the 64 Hz infrared PPG stream.
+  BPM and successive-RR HRV are derived from PPG. On macOS, allow Bluetooth access for
+  Terminal/Python if prompted. The server can also attach to an already-running
+  `muselsl stream --ppg` process.
 - **Demo mode** — no hardware needed; coherent simulated biosignals drive everything.
 - **Spotify** — create an app at <https://developer.spotify.com/dashboard>, add
   `http://127.0.0.1:8000/callback` as a redirect URI, then:
