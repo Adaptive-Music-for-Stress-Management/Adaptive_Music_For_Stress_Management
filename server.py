@@ -5,7 +5,7 @@ Adaptive Music for Stress Management — computer edition.
 Signal path
     Muse 2 headband ── MuseLSL (EEG 256 Hz + PPG 64 Hz) ──► this server
                                                            │  PPG peak detection -> BPM + HRV differential
-                                                           │  EEG -> five bands + stress probability per channel
+                                                           │  EEG -> five bands + joint JEPA stress probability
         demo mode (no hardware) ────────────────────────┤
                                                         ▼
                                        baseline -> 0-100 stress meter
@@ -60,7 +60,7 @@ HOST = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.
 MUSE_CONNECT_TIMEOUT = float(os.environ.get("MUSE_CONNECT_TIMEOUT", "30"))
 EEG_MODEL_PATH = os.environ.get(
     "EEG_MODEL_PATH",
-    os.path.join(ROOT, "models", "eeg_stress_eegminer.pt"),
+    os.path.join(ROOT, "models", "universe-signal-jepa-stress-detector"),
 )
 
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
@@ -135,9 +135,10 @@ def _stress_label(v):
 def _update_score_locked():
     """Apply the requested EEG + BPM + HRV score formula. Call with lock held.
 
-    EEG probabilities are expressed as percentages so the resulting value fits
-    the dashboard's existing 0–100 meter:
-      average(P(stressed) * 100) + BPM delta + HRV delta
+    Signal-JEPA's joint four-channel probability is copied into the four graph
+    slots. Averaging those identical values contributes it to the 0–100 meter
+    exactly once:
+      P(high stress) * 100 + BPM delta + HRV delta
     """
     if HUB.baseline is None or HUB.bpm is None or HUB.hrv_diff is None:
         return
@@ -425,8 +426,8 @@ def _demo_loop():
         jitter = max(2.0, (34.0 - 26.0 * arousal)) * abs(rng.gauss(0, 1))
         register_beat(time.time(), rr_ms=rr + rng.choice((-1, 1)) * jitter * 0.5)
 
-        # EEG between beats at ~10 Hz: alpha-dominant when calm, beta/gamma
-        # dominant when aroused, with one stressed probability per channel.
+        # EEG between beats at ~10 Hz: alpha-dominant when calm and beta/gamma
+        # dominant when aroused, with one synthetic joint stress probability.
         beat_gap = rr / 1000.0
         t_end = time.time() + beat_gap
         while not _demo_stop.is_set() and time.time() < t_end:
@@ -439,7 +440,6 @@ def _demo_loop():
                     return a + b + rng.gauss(0, 8)
                 values = dict(zip(EEG_CHANNELS, (chan(1.0), chan(2.0), chan(3.0), chan(4.0))))
                 bands = {}
-                probabilities = {}
                 for index, channel in enumerate(EEG_CHANNELS):
                     wobble = rng.gauss(0, 0.5) + index * 0.15
                     bands[channel] = {
@@ -449,7 +449,8 @@ def _demo_loop():
                         "beta": 7.0 + 13.0 * arousal + wobble,
                         "gamma": 2.0 + 10.0 * arousal + wobble,
                     }
-                    probabilities[channel] = max(0.02, min(0.98, 0.05 + 0.90 * arousal + index * 0.01))
+                probability = max(0.02, min(0.98, 0.05 + 0.90 * arousal))
+                probabilities = {channel: probability for channel in EEG_CHANNELS}
                 push_eeg_metrics(values, bands, probabilities, timestamp=now)
             time.sleep(0.02)
 

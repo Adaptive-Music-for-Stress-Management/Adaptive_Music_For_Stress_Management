@@ -42,7 +42,7 @@ This branch carries both: the computer app at the repo root and the Xcode projec
   heartbeats to start), and four EEG channels — right brain (AF8), left brain (AF7),
   right ear (TP10), left ear (TP9). Each EEG graph contains five simultaneous band-power
   traces (Delta 1–4 Hz, Theta 4–8 Hz, Alpha 8–13 Hz, Beta 13–30 Hz, Gamma 30–45 Hz)
-  and the channel's Braindecode `Stressed` probability. Inactive inputs stay blank.
+  and the joint four-channel Signal-JEPA `Stressed` probability. Inactive inputs stay blank.
 - **Meter** — the stress label (Calm / Mild-stress / Stressed) above the actual meter
   value, colored green / yellow / red, over a horizontal meter with all three labels.
   The empty card below the meter is where the Relief UI renders.
@@ -96,35 +96,29 @@ python3 server.py            # opens http://127.0.0.1:8000
 
 ## EEG model and stress score
 
-The bundled `models/eeg_stress_eegminer.pt` contains four location-specific
-[Braindecode](https://github.com/braindecode/braindecode) EEGMiner classifiers. They
-use five learnable magnitude filters initialized to the same Delta/Theta/Alpha/Beta/Gamma
-bands shown in the UI. Training reads only these folders from the bundled EDF archive:
+The bundled `models/universe-signal-jepa-stress-detector/` is a two-class Braindecode
+`SignalJEPA_PreLocal` classifier fine-tuned on the UNIVERSE Wild-session recordings.
+It consumes TP9, AF7, AF8, and TP10 jointly as a `4 × 256` window: two seconds at
+128 Hz. Class 0 is very-low/low stress and class 1 is high/very-high stress.
 
-| Dataset folder | App class | EDF electrode mapped to Muse |
-|---|---|---|
-| Participants Listening to Relaxing Music | Calm | AF3→AF7, T7→TP9, AF4→AF8, T8→TP10 |
-| Complex Mathematical Problem solving (CMPS) | Mild-stress | same mapping |
-| Horrer Video Stimulation | Stressed | same mapping |
+Live Muse data remains buffered at its native 256 Hz. On every half-second graph
+refresh, the latest four-channel context is average-referenced, filtered from
+0.5–50 Hz with a 50 Hz notch, resampled to 128 Hz, cropped to two seconds, and
+standardized per channel. The model then runs once on all four channels together.
+The graphs repeat that joint `P(high stress)` beside each lead; it is not four
+independent channel classifications.
 
-Pz, non-EEG EDF signals, the Stroop folder, and the Trier folder are discarded. EDF
-recordings are 128 Hz; live Muse data remains buffered at its native 256 Hz and only
-the four-second inference window is resampled to 128 Hz. Participants are separated
-between training and validation. Reproduce training with:
-
-```bash
-python3 train_eeg_model.py
-```
-
-Per-channel validation details are recorded in `models/eeg_stress_metrics.json`. The
-current participant-held-out mean accuracy is 46.1%, so this classifier is an
-experimental wellness signal, not a medical diagnostic.
+The complete training and evaluation package is in `create_JEPA/`, including the
+script, exact dependencies, selected checkpoint, machine-readable metrics, and held-out
+test report. Its participant-held-out recording balanced accuracy is 56.25%; this is
+an experimental wellness signal, not a medical diagnostic. See
+`create_JEPA/README.md` for the reproducible command and limitations.
 
 Once all four probabilities, BPM, HRV, and the BPM/HRV baseline are available, the
 0–100 meter applies the requested formula (probabilities expressed as percentages):
 
 ```text
-clamp(average(channel P(stressed) × 100)
+clamp(P(high stress) × 100
       + (current BPM − baseline BPM)
       + (current HRV − baseline HRV), 0, 100)
 ```
@@ -141,9 +135,9 @@ See [`AdaptiveMusicMobile/README.md`](AdaptiveMusicMobile/README.md) — or chec
 
 ```
 server.py               # FastAPI: MuseLSL ingest, PPG beat detection, scoring, music APIs
-eeg_pipeline.py         # 256 Hz buffers, five EEG bands, trained-model inference
-train_eeg_model.py      # three-class EDF training with participant-separated validation
-models/                 # trained EEGMiner weights and validation metrics
+eeg_pipeline.py         # 256 Hz buffers, five EEG bands, live Signal-JEPA inference
+create_JEPA/            # reproducible UNIVERSE Signal-JEPA training/evaluation package
+models/                 # deployed Signal-JEPA weights and configuration
 claude_music.py         # Claude song-picking · Spotify search · instrumental finder · LRCLIB
 static/                 # the dashboard (index.html, style.css, app.js)
 BPM_folder.zip          # SUNO AI library (Git LFS) — auto-extracted on first run

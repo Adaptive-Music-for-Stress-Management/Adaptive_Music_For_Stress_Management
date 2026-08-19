@@ -27,7 +27,7 @@ trained four-channel spatial/classification head.
 On 12 recordings from the two participant-held-out test subjects (UN_107 and
 UN_111), recording-level balanced accuracy was 0.5625 and ROC AUC was 0.3125.
 The decision threshold (0.493298) was selected on separate validation subjects.
-See `../universe_signal_jepa_test_report.md` and
-`../universe_signal_jepa_test_metrics.json` for the protocol and full metrics.
+See `../../create_JEPA/universe_signal_jepa_test_report.md` and
+`../../create_JEPA/universe_signal_jepa_test_metrics.json` for the protocol and full metrics.
 
 This is an experimental research model, not a medical diagnostic.

@@ -9,13 +9,23 @@ import numpy as np
 
 os.environ.setdefault("STRESS_MUSIC", tempfile.mkdtemp(prefix="adaptive-music-eeg-test-"))
 
-from eeg_pipeline import EEG_CHANNELS, LiveEEGAnalyzer, band_powers  # noqa: E402
+from eeg_pipeline import (  # noqa: E402
+    EEG_CHANNELS,
+    MODEL_WINDOW_SAMPLES,
+    LiveEEGAnalyzer,
+    band_powers,
+    prepare_model_window,
+)
 import server  # noqa: E402
 
 
 class FakePredictor:
-    def stressed_probabilities(self, windows):
-        return [0.2, 0.4, 0.6, 0.8]
+    def __init__(self):
+        self.windows = []
+
+    def stressed_probability(self, window):
+        self.windows.append(window.copy())
+        return 0.8
 
 
 class EEGPipelineTests(unittest.TestCase):
@@ -33,7 +43,10 @@ class EEGPipelineTests(unittest.TestCase):
 
     def test_live_analyzer_emits_all_bands_and_channel_probabilities(self):
         emitted = []
-        analyzer = LiveEEGAnalyzer(FakePredictor(), lambda *values: emitted.append(values), update_interval=0)
+        predictor = FakePredictor()
+        analyzer = LiveEEGAnalyzer(
+            predictor, lambda *values: emitted.append(values), update_interval=0
+        )
         time_axis = np.arange(1024) / 256
         samples = np.stack([
             np.sin(2 * np.pi * 3 * time_axis),
@@ -46,7 +59,34 @@ class EEGPipelineTests(unittest.TestCase):
         self.assertEqual(set(bands), set(EEG_CHANNELS))
         self.assertTrue(all(set(values) == {"delta", "theta", "alpha", "beta", "gamma"}
                             for values in bands.values()))
+        self.assertEqual(len(predictor.windows), 1)
+        self.assertEqual(predictor.windows[0].shape, (4, MODEL_WINDOW_SAMPLES))
+        self.assertTrue(all(value == 0.8 for value in probabilities.values()))
         self.assertEqual(probabilities["right_ear"], 0.8)
+
+    def test_joint_jepa_runs_again_on_every_graph_refresh(self):
+        predictor = FakePredictor()
+        analyzer = LiveEEGAnalyzer(predictor, lambda *_: None, update_interval=0.5)
+        samples = np.random.default_rng(42).normal(size=(1024, 4))
+        self.assertTrue(analyzer.add_samples(samples, sample_rate=256, now=100.0))
+        self.assertFalse(analyzer.add_samples(samples[:64], sample_rate=256, now=100.25))
+        self.assertTrue(analyzer.add_samples(samples[64:192], sample_rate=256, now=100.5))
+        self.assertEqual(len(predictor.windows), 2)
+
+    def test_model_window_matches_signal_jepa_contract(self):
+        samples = np.random.default_rng(7).normal(size=(4, 1024))
+        window = prepare_model_window(samples, source_rate=256)
+        self.assertEqual(window.shape, (4, 256))
+        self.assertEqual(window.dtype, np.float32)
+        self.assertTrue(np.isfinite(window).all())
+        self.assertTrue(np.all(np.abs(window) <= 20.0))
+
+    def test_bundled_signal_jepa_checkpoint_is_loadable(self):
+        predictor = server._EEG_PREDICTOR
+        self.assertTrue(predictor.available, predictor.load_error)
+        probability = predictor.stressed_probability(np.zeros((4, 256), dtype=np.float32))
+        self.assertGreaterEqual(probability, 0.0)
+        self.assertLessEqual(probability, 1.0)
 
 
 class EEGScoreTests(unittest.TestCase):
