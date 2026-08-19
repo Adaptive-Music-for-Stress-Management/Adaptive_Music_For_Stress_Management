@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import time
 import unittest
 
 import numpy as np
@@ -93,16 +94,56 @@ class EEGScoreTests(unittest.TestCase):
     def test_score_uses_average_stressed_percent_plus_bpm_and_hrv_deltas(self):
         with server.HUB.lock:
             server.HUB.reset_session()
+            now = 100.0
             server.HUB.baseline = {"bpm": 60.0, "hrv_diff": 20.0}
             server.HUB.bpm = 80.0
             server.HUB.hrv_diff = 12.0
+            server.HUB.last_beat_ts = now
             server.HUB.eeg_stressed_probability = dict(zip(
                 EEG_CHANNELS, (0.8, 0.7, 0.9, 0.6)
             ))
-            server._update_score_locked()
+            server.HUB.eeg_ts = {channel: now for channel in EEG_CHANNELS}
+            server._update_score_locked(now)
             # average EEG percentage 75 + BPM delta 20 + HRV delta -8
             self.assertAlmostEqual(server.HUB.stress_raw, 87.0)
             self.assertAlmostEqual(server.HUB.stress, 87.0)
+
+    def test_score_uses_eeg_when_bpm_and_hrv_are_missing(self):
+        with server.HUB.lock:
+            server.HUB.reset_session()
+            now = 100.0
+            server.HUB.eeg_stressed_probability = {
+                channel: 0.62 for channel in EEG_CHANNELS
+            }
+            server.HUB.eeg_ts = {channel: now for channel in EEG_CHANNELS}
+            server._update_score_locked(now)
+            self.assertAlmostEqual(server.HUB.stress_raw, 62.0)
+
+    def test_score_uses_available_heart_metric_when_eeg_and_hrv_are_missing(self):
+        with server.HUB.lock:
+            server.HUB.reset_session()
+            now = 100.0
+            server.HUB.baseline = {"bpm": 60.0, "hrv_diff": 20.0}
+            server.HUB.bpm = 82.0
+            server.HUB.last_beat_ts = now
+            server._update_score_locked(now)
+            self.assertAlmostEqual(server.HUB.stress_raw, 22.0)
+
+    def test_snapshot_shows_eeg_score_while_heart_baseline_is_calibrating(self):
+        with server.HUB.lock:
+            server.HUB.reset_session()
+            now = time.time()
+            server.HUB.stressed_start = False
+            for channel in EEG_CHANNELS:
+                server.HUB.eeg[channel] = 1.0
+                server.HUB.eeg_ts[channel] = now
+                server.HUB.eeg_stressed_probability[channel] = 0.54
+                for band in server.BANDS:
+                    server.HUB.eeg_bands[channel][band] = 1.0
+            server._update_score_locked(now)
+        state = server.snapshot()
+        self.assertTrue(state["calibrating"])
+        self.assertAlmostEqual(state["stress"], 54.0)
 
 
 if __name__ == "__main__":

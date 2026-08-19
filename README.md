@@ -41,8 +41,9 @@ This branch carries both: the computer app at the repo root and the Xcode projec
 - **Graphs** — BPM (sampled once per heartbeat), HRV differential (needs three
   heartbeats to start), and four EEG channels — right brain (AF8), left brain (AF7),
   right ear (TP10), left ear (TP9). Each EEG graph contains five simultaneous band-power
-  traces (Delta 1–4 Hz, Theta 4–8 Hz, Alpha 8–13 Hz, Beta 13–30 Hz, Gamma 30–45 Hz)
-  and the joint four-channel Signal-JEPA `Stressed` probability. Inactive inputs stay blank.
+  traces (Delta 1–4 Hz, Theta 4–8 Hz, Alpha 8–13 Hz, Beta 13–30 Hz, Gamma 30–45 Hz).
+  The Signal-JEPA classification contributes to the meter without adding status text to
+  the individual graphs. Inactive inputs stay blank.
 - **Meter** — the stress label (Calm / Mild-stress / Stressed) above the actual meter
   value, colored green / yellow / red, over a horizontal meter with all three labels.
   The empty card below the meter is where the Relief UI renders.
@@ -77,10 +78,12 @@ python3 server.py            # opens http://127.0.0.1:8000
 - **Muse 2** — turn on the headband, make sure no other phone/computer app is connected
   to it, then click *Connect and read Muse 2 headband*. The server uses
   [MuseLSL](https://github.com/alexandrebarachant/muse-lsl) directly and consumes all
-  native TP9/AF7/AF8/TP10 EEG samples at 256 Hz plus the 64 Hz infrared PPG stream.
-  BPM and successive-RR HRV are derived from PPG. On macOS, allow Bluetooth access for
-  Terminal/Python if prompted. The server can also attach to an already-running
-  `muselsl stream --ppg` process.
+  native TP9/AF7/AF8/TP10 EEG samples at 256 Hz plus the three-channel 64 Hz PPG stream.
+  BPM and successive-RR HRV are derived from all three PPG wavelengths: the server removes
+  optical drift, filters to the physiological heart-rate range, and automatically uses the
+  clearest channel and pulse polarity. On macOS, allow Bluetooth access for Terminal/Python
+  if prompted. The server can also attach to an already-running `muselsl stream --ppg`
+  process.
 - **Demo mode** — no hardware needed; coherent simulated biosignals drive everything.
 - **Spotify** — create an app at <https://developer.spotify.com/dashboard>, add
   `http://127.0.0.1:8000/callback` as a redirect URI, then:
@@ -105,8 +108,8 @@ Live Muse data remains buffered at its native 256 Hz. On every half-second graph
 refresh, the latest four-channel context is average-referenced, filtered from
 0.5–50 Hz with a 50 Hz notch, resampled to 128 Hz, cropped to two seconds, and
 standardized per channel. The model then runs once on all four channels together.
-The graphs repeat that joint `P(high stress)` beside each lead; it is not four
-independent channel classifications.
+The joint `P(high stress)` contributes to the meter; it is not four independent
+channel classifications.
 
 The complete training and evaluation package is in `create_JEPA/`, including the
 script, exact dependencies, selected checkpoint, machine-readable metrics, and held-out
@@ -114,14 +117,18 @@ test report. Its participant-held-out recording balanced accuracy is 56.25%; thi
 an experimental wellness signal, not a medical diagnostic. See
 `create_JEPA/README.md` for the reproducible command and limitations.
 
-Once all four probabilities, BPM, HRV, and the BPM/HRV baseline are available, the
-0–100 meter applies the requested formula (probabilities expressed as percentages):
+The 0–100 meter applies the requested formula using every currently available term
+(probabilities expressed as percentages):
 
 ```text
 clamp(P(high stress) × 100
       + (current BPM − baseline BPM)
       + (current HRV − baseline HRV), 0, 100)
 ```
+
+If BPM or HRV is missing, its delta is omitted. If both heart metrics are missing,
+Signal-JEPA still drives the meter. Likewise, a fresh heart metric can drive the meter
+when EEG is unavailable. BPM/HRV terms require their baseline; EEG does not.
 
 Choosing **No** during setup calibrates only BPM and HRV for 30 seconds. EEG is never
 included in baseline calibration.

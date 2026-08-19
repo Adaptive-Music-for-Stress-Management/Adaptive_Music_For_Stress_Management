@@ -154,9 +154,11 @@ const tiles = {};
     tile.className = "gtile";
     const legend = g.eeg ? `<div class="glegend">${EEG_BANDS.map(b =>
       `<span style="color:${b.color}">${b.name}</span>`).join("")}</div>` : "";
+    const value = g.eeg ? "" :
+      `<span class="gval" id="gv-${g.key}" style="color:${g.color}">--</span>`;
     tile.innerHTML =
       `<div class="gtop"><span class="gname">${g.name}</span>` +
-      `<span class="gval" id="gv-${g.key}" style="color:${g.color}">--</span></div>` +
+      `${value}</div>` +
       `<div class="gplot"><canvas></canvas>${legend}<div class="gnosig" id="gn-${g.key}" hidden>NO&nbsp;READING</div></div>`;
     stack.appendChild(tile);
     const cv = tile.querySelector("canvas");
@@ -175,6 +177,7 @@ function pushBandPoints(t, values) {
 function glowValues() {
   for (const g of GRAPHS) {
     const el = $("gv-" + g.key);
+    if (!el) continue;
     el.classList.remove("glow"); void el.offsetWidth; el.classList.add("glow");
   }
 }
@@ -192,12 +195,10 @@ function updateGraphs(s, beat) {
     const valEl = $("gv-" + g.key);
     $("gn-" + g.key).hidden = active;
     if (!active) {
-      valEl.textContent = g.eeg ? "STRESSED --" : "--";
+      if (valEl) valEl.textContent = "--";
       if (g.eeg) for (const band of EEG_BANDS) t.bandBufs[band.key] = [];
     } else {
       if (g.eeg) {
-        const result = s.eeg_stress && s.eeg_stress[g.key];
-        valEl.textContent = result ? `STRESSED ${Number(result.probability).toFixed(1)}%` : "STRESSED --";
         pushBandPoints(t, bands);
       } else {
         valEl.textContent = Number(v).toFixed(g.dec);
@@ -245,15 +246,15 @@ function drawTile(t) {
 const LABEL_COLOR = {"Calm": css("--calm"), "Mild-stress": css("--mild"), "Stressed": css("--stressed")};
 function updateMeter(s) {
   const label = $("stressLabel"), value = $("stressValue"), needle = $("meterNeedle");
-  if (s.calibrating) {
-    label.textContent = "Calibrating";
-    label.style.color = css("--muted");
-    value.textContent = s.calibration_left != null ? Math.ceil(s.calibration_left) + "s left" : "…";
-    value.style.color = css("--muted");
-    needle.style.left = "0%";
-    return;
-  }
   if (s.stress == null) {
+    if (s.calibrating) {
+      label.textContent = "Calibrating";
+      label.style.color = css("--muted");
+      value.textContent = s.calibration_left != null ? Math.ceil(s.calibration_left) + "s left" : "…";
+      value.style.color = css("--muted");
+      needle.style.left = "0%";
+      return;
+    }
     label.textContent = "—"; label.style.color = css("--muted");
     value.textContent = "--"; value.style.color = css("--muted");
     needle.style.left = "0%";

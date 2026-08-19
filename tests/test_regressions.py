@@ -2,8 +2,11 @@
 
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 
 
 # Do not extract the 100 MB music archive merely to import the application.
@@ -34,14 +37,64 @@ class StressFolderTests(unittest.TestCase):
         self.assertEqual(server._bpm_folders_for_stress_label(None), (90, 100, 110, 120))
 
     def test_ppg_reset_discards_a_peak_from_the_prior_session(self):
-        detector = server.PPGDetector()
-        detector.dc = 12.0
+        detector = server.PPGDetector(beat_callback=lambda *_args, **_kwargs: None)
+        detector.sample([10.0, 12.0, 11.0], 123.0)
         detector.last_peak = 123.0
-        detector.above = True
+        detector.selected_channel = 1
+        detector.selected_polarity = 1
         detector.reset()
-        self.assertIsNone(detector.dc)
         self.assertEqual(detector.last_peak, 0.0)
-        self.assertFalse(detector.above)
+        self.assertIsNone(detector.selected_channel)
+        self.assertIsNone(detector.selected_polarity)
+        self.assertEqual(len(detector.samples), 0)
+
+    def test_ppg_detector_finds_bpm_and_rr_intervals_despite_optical_drift(self):
+        intervals = []
+
+        def capture(_timestamp, rr_ms=None, **_kwargs):
+            intervals.append(rr_ms)
+
+        detector = server.PPGDetector(beat_callback=capture)
+        rate = 64
+        seconds = 12
+        axis = np.arange(rate * seconds) / rate
+        rng = np.random.default_rng(2026)
+        pulse = np.sin(2 * np.pi * 1.2 * axis) + 0.35 * np.sin(2 * np.pi * 2.4 * axis)
+        drift = 12_000 * np.sin(2 * np.pi * 0.08 * axis) + 250 * axis
+        samples = np.stack([
+            500_000 + drift + rng.normal(0, 1_500, axis.size),
+            2_000_000 + drift + 18_000 * pulse + rng.normal(0, 900, axis.size),
+            1_400_000 + 0.7 * drift + 11_000 * pulse + rng.normal(0, 1_100, axis.size),
+        ], axis=1)
+        started = time.time()
+        for index, sample in enumerate(samples):
+            detector.sample(sample, started + index / rate)
+
+        self.assertGreaterEqual(len(intervals), 7)
+        detected_bpm = 60_000.0 / np.median(intervals)
+        self.assertAlmostEqual(detected_bpm, 72.0, delta=3.0)
+        self.assertIn(detector.selected_channel, (1, 2))
+        self.assertGreater(detector.signal_quality, 3.0)
+
+    def test_ppg_detector_rejects_drift_and_nonperiodic_noise(self):
+        intervals = []
+        detector = server.PPGDetector(
+            beat_callback=lambda _timestamp, rr_ms=None, **_kwargs: intervals.append(rr_ms)
+        )
+        rate = 64
+        axis = np.arange(rate * 12) / rate
+        rng = np.random.default_rng(8)
+        drift = 10_000 * np.sin(2 * np.pi * 0.1 * axis)
+        samples = (
+            np.stack([500_000 + drift, 2_000_000 + drift, 1_400_000 + drift], axis=1)
+            + rng.normal(0, 250, (axis.size, 3))
+        )
+        started = time.time()
+        for index, sample in enumerate(samples):
+            detector.sample(sample, started + index / rate)
+
+        self.assertEqual(intervals, [])
+        self.assertEqual(detector.signal_quality, 0.0)
 
 
 class PlaylistTests(unittest.TestCase):
