@@ -170,5 +170,13 @@ class InstrumentalArtistTests(unittest.TestCase):
         self.assertEqual(result["id"], "right")
 
 
+class SessionAnalysisTests(unittest.TestCase):
+    def test_saved_session_analysis_accepts_finite_chart_points(self):
+        with patch.object(claude_music, "_complete", return_value='{"analysis":"Stress eased steadily."}'):
+            result = claude_music.analyze_stress_session(
+                [{"x": 0, "y": 58.2}, {"x": 15, "y": 41.7}], 49.95, api_key="test")
+        self.assertEqual(result, "Stress eased steadily.")
+
+
 if __name__ == "__main__":
     unittest.main()

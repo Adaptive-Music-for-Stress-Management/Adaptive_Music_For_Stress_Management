@@ -120,6 +120,7 @@ document.getElementById("startSessionBtn").addEventListener("click", () => {
 document.getElementById("endSessionBtn").addEventListener("click", saveCurrentSession);
 
 async function saveCurrentSession() {
+  if (window.AdaptuneSession?.stopAudio) await window.AdaptuneSession.stopAudio();
   if (!supabaseClient || !portalUser || !window.AdaptuneSession) return;
   const button = document.getElementById("endSessionBtn");
   const original = button.textContent;
@@ -216,8 +217,11 @@ async function openSession(session) {
     }
     graphGrid.appendChild(card);
   }
-  drawStressChart(document.getElementById("savedStressCanvas"), session.stress_points || []);
   portalShow("sessionOverlay", true);
+  // A hidden canvas reports a zero-sized layout. Wait until the modal has
+  // participated in layout before drawing the saved time series.
+  requestAnimationFrame(() => requestAnimationFrame(() =>
+    drawStressChart(document.getElementById("savedStressCanvas"), session.stress_points || [])));
 }
 
 document.getElementById("sessionClose").addEventListener("click", () => portalShow("sessionOverlay", false));
@@ -250,6 +254,12 @@ document.getElementById("analyzeSessionBtn").addEventListener("click", async () 
 });
 
 function drawStressChart(canvas, points) {
+  const normalized = (points || []).map(point => {
+    if (Array.isArray(point)) return {x: Number(point[0]), y: Number(point[1])};
+    return {x: Number(point?.x ?? point?.seconds), y: Number(point?.y ?? point?.stress)};
+  }).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y));
+  const empty = document.getElementById("savedStressEmpty");
+  if (empty) empty.hidden = normalized.length > 0;
   const rect = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.round(rect.width * ratio));
@@ -260,12 +270,35 @@ function drawStressChart(canvas, points) {
   context.clearRect(0, 0, width, height);
   context.strokeStyle = "#1c2733";
   for (let i = 1; i < 4; i++) { const y = height * i / 4; context.beginPath(); context.moveTo(0,y); context.lineTo(width,y); context.stroke(); }
-  if (!points || points.length < 2) return;
-  const maxX = Math.max(1, ...points.map(point => Number(point.x) || 0));
-  context.strokeStyle = "#2dd48f"; context.lineWidth = 2; context.beginPath();
-  points.forEach((point, index) => {
-    const x = width * (Number(point.x) || 0) / maxX;
-    const y = height * (1 - Math.max(0, Math.min(100, Number(point.y) || 0)) / 100);
+  if (!normalized.length) return;
+  const maxX = Math.max(1, ...normalized.map(point => point.x));
+  const xPad = 8, yPad = 12;
+  const pointPosition = point => ({
+    x: xPad + (width - xPad * 2) * Math.max(0, point.x) / maxX,
+    y: yPad + (height - yPad * 2) * (1 - Math.max(0, Math.min(100, point.y)) / 100),
+  });
+  if (normalized.length === 1) {
+    const point = pointPosition(normalized[0]);
+    context.fillStyle = "#2dd48f";
+    context.beginPath(); context.arc(point.x, point.y, 4, 0, Math.PI * 2); context.fill();
+    return;
+  }
+  const fill = context.createLinearGradient(0, 0, 0, height);
+  fill.addColorStop(0, "rgba(45,212,143,.22)");
+  fill.addColorStop(1, "rgba(45,212,143,0)");
+  context.beginPath();
+  normalized.forEach((point, index) => {
+    const position = pointPosition(point);
+    index ? context.lineTo(position.x, position.y) : context.moveTo(position.x, position.y);
+  });
+  const last = pointPosition(normalized[normalized.length - 1]);
+  const first = pointPosition(normalized[0]);
+  context.lineTo(last.x, height - yPad); context.lineTo(first.x, height - yPad); context.closePath();
+  context.fillStyle = fill; context.fill();
+  context.strokeStyle = "#2dd48f"; context.lineWidth = 2.5; context.beginPath();
+  normalized.forEach((point, index) => {
+    const position = pointPosition(point);
+    const x = position.x, y = position.y;
     index ? context.lineTo(x,y) : context.moveTo(x,y);
   });
   context.stroke();

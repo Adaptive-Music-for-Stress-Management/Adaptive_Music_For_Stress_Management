@@ -236,6 +236,7 @@ window.AdaptuneSession = {
       avg_stress: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
     };
   },
+  stopAudio: stopSessionAudio,
 };
 function drawTile(t) {
   const cv = t.cv, r = cv.getBoundingClientRect();
@@ -765,6 +766,36 @@ async function spotifyFadeStop(handoffId) {
   spIsPlaying = false;
   $("spPlayBtn").innerHTML = "&#9654;";
   return true;
+}
+
+async function stopSessionAudio() {
+  // Ending a session owns the final handoff: invalidate any song lookup or
+  // crossfade that could otherwise restart playback after the dashboard closes.
+  const stopToken = ++audioHandoffId;
+  sunoLoadRequestId += 1;
+  spotifyPlayRequestId += 1;
+  sunoFetching = false;
+  sunoPlaying = false;
+  spIsPlaying = false;
+  spLastPos = 0;
+  $("sunoPlay").innerHTML = "&#9654;";
+  $("spPlayBtn").innerHTML = "&#9654;";
+
+  const stopSuno = sunoEls.map(async element => {
+    await fadeEl(element, 0, 350);
+    if (stopToken !== audioHandoffId) return;
+    try {
+      element.pause();
+      element.currentTime = 0;
+    } catch (_) {}
+  });
+  const stopSpotify = (async () => {
+    if (!spPlayer) return;
+    await spFade(0, 350);
+    if (stopToken !== audioHandoffId) return;
+    await spPlayer.pause().catch(() => {});
+  })();
+  await Promise.all([...stopSuno, stopSpotify]);
 }
 $("spPlayBtn").addEventListener("click", async () => {
   if (!spPlayer) return;

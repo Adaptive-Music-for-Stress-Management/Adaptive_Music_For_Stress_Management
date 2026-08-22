@@ -98,7 +98,7 @@
 <div class="session-overlay" id="sessionOverlay" hidden>
   <div class="session-modal"><button class="modal-close" id="sessionClose" aria-label="Close">×</button><div class="eyebrow mono" id="sessionDate"></div><h1>Session details</h1>
     <section class="session-panel"><h2>Six live channels</h2><div class="saved-graphs" id="savedGraphs"></div></section>
-    <section class="session-panel stress-session-panel"><div class="saved-stress-chart"><h2>Stress over time</h2><canvas id="savedStressCanvas"></canvas></div><aside><div class="average-label mono">AVERAGE STRESS</div><div class="average-score" id="savedAverage">—</div><label>Anthropic API key<input type="password" id="analysisKey" placeholder="sk-ant-…"></label><button class="btn portal-btn" id="analyzeSessionBtn">Get AI analysis</button><div class="portal-message" id="analysisResult"></div></aside></section>
+    <section class="session-panel stress-session-panel"><div class="saved-stress-chart"><h2>Stress over time</h2><div class="stress-chart-frame"><canvas id="savedStressCanvas"></canvas><div class="saved-stress-empty mono" id="savedStressEmpty" hidden>NO STRESS READINGS FOR THIS SESSION</div></div></div><aside class="session-analysis"><div class="average-label mono">AVERAGE STRESS</div><div class="average-score" id="savedAverage">—</div><label>Anthropic API key<input type="password" id="analysisKey" placeholder="sk-ant-…"></label><button class="btn portal-btn" id="analyzeSessionBtn">Get AI analysis</button><div class="portal-message" id="analysisResult"></div></aside></section>
   </div>
 </div>
 
@@ -326,7 +326,7 @@
 <audio id="audioA" preload="auto"></audio>
 <audio id="audioB" preload="auto"></audio>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="/static/app.js?v=adaptune-20260821"></script>
-<script src="/static/portal.js?v=adaptune-20260821"></script>
+<script src="/static/app.js?v=adaptune-20260821-2"></script>
+<script src="/static/portal.js?v=adaptune-20260821-2"></script>
 </body>
 </html>
