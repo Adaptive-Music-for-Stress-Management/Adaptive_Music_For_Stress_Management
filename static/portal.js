@@ -14,7 +14,26 @@ let landingSignalIndex = 0;
 let landingAnalysisIndex = 0;
 let landingPlayIndex = 0;
 
-const portalShow = (id, visible) => { document.getElementById(id).hidden = !visible; };
+const PRIMARY_VIEWS = new Set(["landing", "accountDash", "flow", "dash"]);
+const portalShow = (id, visible) => {
+  const element = document.getElementById(id);
+  if (!PRIMARY_VIEWS.has(id)) {
+    element.hidden = !visible;
+    return;
+  }
+  if (visible) {
+    element.hidden = false;
+    element.classList.remove("portal-fade-out");
+    element.classList.add("portal-fade-in");
+    setTimeout(() => element.classList.remove("portal-fade-in"), 520);
+  } else if (!element.hidden) {
+    element.classList.remove("portal-fade-in");
+    element.classList.add("portal-fade-out");
+    setTimeout(() => {
+      if (element.classList.contains("portal-fade-out")) element.hidden = true;
+    }, 320);
+  }
+};
 const portalMessage = (id, text, error = false) => {
   const element = document.getElementById(id);
   element.textContent = text || "";
@@ -91,6 +110,7 @@ document.getElementById("signOutBtn").addEventListener("click", async () => {
 });
 
 document.getElementById("startSessionBtn").addEventListener("click", () => {
+  document.getElementById("flow").classList.remove("fade-out");
   portalShow("accountDash", false);
   portalShow("flow", true);
   portalShow("dash", false);
