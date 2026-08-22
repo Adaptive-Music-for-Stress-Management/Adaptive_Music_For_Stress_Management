@@ -240,8 +240,19 @@ final class SunoPlayer: NSObject, ObservableObject {
     }
 
     func stopAll() {
+        playbackGeneration &+= 1
+        switching = false
         playing = false
+        rampTimers.values.forEach { $0.invalidate() }
+        rampTimers.removeAll()
+        nodeA.volume = 0
+        nodeB.volume = 0
         nodeA.stop(); nodeB.stop()
+        fileA = nil; fileB = nil
+        offsetA = 0; offsetB = 0
+        bucket = nil; songName = nil
+        currentTime = 0
+        duration = 0
     }
 
     private var rampTimers: [ObjectIdentifier: Timer] = [:]

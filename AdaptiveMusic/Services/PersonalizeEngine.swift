@@ -121,6 +121,21 @@ final class PersonalizeEngine: ObservableObject {
         suno.skip()
     }
 
+    func stopSessionAudio() async {
+        // Invalidate any pending handoff so a late Spotify/SUNO request cannot
+        // resume after the saved-session dashboard replaces the live session.
+        audioHandoffID &+= 1
+        suno.stopAll()
+        await spotify.pause()
+        isPlaying = false
+        lastPos = 0
+        currentTrack = nil
+        positionMs = 0
+        durationMs = 0
+        karaoke = nil
+        karaokeMessage = nil
+    }
+
     private var stressLabel: StressLabel { hub.stressLabel ?? .mild }
 
     // MARK: - choosing / transport

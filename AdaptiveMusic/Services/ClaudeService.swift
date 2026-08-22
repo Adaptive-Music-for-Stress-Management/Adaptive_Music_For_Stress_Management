@@ -31,7 +31,16 @@ final class ClaudeService: ObservableObject {
 
     struct Suggestion { let artist: String; let title: String }
 
-    enum ClaudeError: Error { case noKey, badResponse }
+    enum ClaudeError: LocalizedError {
+        case noKey, badResponse, api(String)
+        var errorDescription: String? {
+            switch self {
+            case .noKey: return "Enter your Anthropic API key first."
+            case .badResponse: return "Anthropic returned an unreadable response. Please try again."
+            case .api(let message): return message
+            }
+        }
+    }
 
     private func complete(_ prompt: String, maxTokens: Int = 700,
                           system: String = ClaudeService.system) async throws -> String {
@@ -46,7 +55,13 @@ final class ClaudeService: ObservableObject {
             "system": system,
             "messages": [["role": "user", "content": prompt]],
         ])
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let error = object?["error"] as? [String: Any]
+            let message = error?["message"] as? String
+            throw ClaudeError.api(message ?? "Anthropic request failed (\(http.statusCode)).")
+        }
         guard let j = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = j["content"] as? [[String: Any]] else { throw ClaudeError.badResponse }
         return content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }

@@ -6,6 +6,7 @@ import SwiftUI
 struct DashboardView: View {
     @EnvironmentObject var hub: SignalHub
     @EnvironmentObject var account: SupabaseService
+    @EnvironmentObject var engine: PersonalizeEngine
     @EnvironmentObject var camera: CameraPPGReader
     @EnvironmentObject var watch: WatchLink
     @State private var saving = false
@@ -39,9 +40,11 @@ struct DashboardView: View {
     private func endSession() {
         saving = true; saveError = nil
         Task {
+            await engine.stopSessionAudio()
+            camera.stop()
+            watch.endWorkoutSession()
             do {
                 try await account.finishAndSave(hub: hub)
-                camera.stop(); watch.endWorkoutSession()
             } catch { saveError = error.localizedDescription }
             saving = false
         }

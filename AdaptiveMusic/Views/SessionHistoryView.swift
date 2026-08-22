@@ -60,6 +60,7 @@ struct SessionDetailView: View {
     let session: SavedSession
     @State private var key = ""
     @State private var analysis = ""
+    @State private var analysisError: String?
     @State private var analyzing = false
     private let channels = [("bpm","BPM"),("hrv_diff","HRV differential"),("right_brain","EEG right brain"),("left_brain","EEG left brain"),("right_ear","EEG right ear"),("left_ear","EEG left ear")]
 
@@ -75,9 +76,17 @@ struct SessionDetailView: View {
                         StressHistoryChart(points: session.stressPoints).frame(height: 230)
                         Text("AVERAGE STRESS").font(.caption.monospaced()).foregroundStyle(Theme.muted)
                         Text(session.avgStress.map { String(format: "%.1f", $0) } ?? "—").font(.system(size: 48, weight: .bold, design: .monospaced)).foregroundStyle(Theme.accent)
-                        if !claude.keySet { SecureField("Anthropic API key (sk-ant-…)", text: $key).padding(11).background(Theme.panel2, in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line)) }
-                        Button(analyzing ? "Analyzing…" : "Get AI analysis") { analyze() }.buttonStyle(PrimaryHistoryButton()).disabled(analyzing || (!claude.keySet && key.isEmpty))
+                        VStack(spacing: 12) {
+                            SecureField(claude.keySet ? "Use saved API key or enter a replacement" : "Anthropic API key (sk-ant-…)", text: $key)
+                                .padding(11)
+                                .background(Theme.panel2, in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
+                            Button(analyzing ? "Analyzing…" : "Get AI analysis") { analyze() }
+                                .buttonStyle(PrimaryHistoryButton())
+                                .disabled(analyzing || (!claude.keySet && key.isEmpty))
+                        }
                         if !analysis.isEmpty { Text(analysis).foregroundStyle(Theme.muted).lineSpacing(4) }
+                        if let analysisError { Text(analysisError).foregroundStyle(StressLabel.stressed.color).lineSpacing(4) }
                     }.padding(16).background(Theme.panel, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
                 }.padding(16)
             }.background(Theme.bg).navigationTitle("Session details").toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
@@ -86,8 +95,12 @@ struct SessionDetailView: View {
 
     private func analyze() {
         if !key.isEmpty { claude.apiKey = key; key = "" }
-        analyzing = true; analysis = ""
-        Task { do { analysis = try await claude.analyzeSession(points: session.stressPoints, average: session.avgStress) } catch { analysis = error.localizedDescription }; analyzing = false }
+        analyzing = true; analysis = ""; analysisError = nil
+        Task {
+            do { analysis = try await claude.analyzeSession(points: session.stressPoints, average: session.avgStress) }
+            catch { analysisError = error.localizedDescription }
+            analyzing = false
+        }
     }
 }
 
@@ -107,10 +120,47 @@ private struct SavedGraphView: View {
 
 private struct StressHistoryChart: View {
     let points: [StressPoint]
-    var body: some View { Canvas { context, size in
-        for line in 1...3 { var grid=Path();let y=size.height*CGFloat(line)/4;grid.move(to:.init(x:0,y:y));grid.addLine(to:.init(x:size.width,y:y));context.stroke(grid,with:.color(Theme.line)) }
-        guard points.count > 1 else { return };let maxX=max(1,points.map(\.x).max() ?? 1);var path=Path();for(index,point) in points.enumerated(){let x=size.width*CGFloat(point.x/maxX);let y=size.height*(1-CGFloat(min(100,max(0,point.y))/100));index==0 ? path.move(to:.init(x:x,y:y)) : path.addLine(to:.init(x:x,y:y))};context.stroke(path,with:.color(Theme.accent),lineWidth:2)
-    } }
+    var body: some View {
+        ZStack {
+            Canvas { context, size in
+                for line in 1...3 {
+                    var grid = Path(); let y = size.height * CGFloat(line) / 4
+                    grid.move(to: .init(x: 0, y: y)); grid.addLine(to: .init(x: size.width, y: y))
+                    context.stroke(grid, with: .color(Theme.line))
+                }
+                guard !points.isEmpty else { return }
+                let maxX = max(1, points.map(\.x).max() ?? 1)
+                let xPad: CGFloat = 8, yPad: CGFloat = 12
+                let position: (StressPoint) -> CGPoint = { point in
+                    CGPoint(
+                        x: xPad + (size.width - xPad * 2) * CGFloat(max(0, point.x) / maxX),
+                        y: yPad + (size.height - yPad * 2) * (1 - CGFloat(min(100, max(0, point.y)) / 100))
+                    )
+                }
+                if points.count == 1 {
+                    let point = position(points[0])
+                    context.fill(Path(ellipseIn: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)), with: .color(Theme.accent))
+                    return
+                }
+                var line = Path()
+                for (index, point) in points.enumerated() {
+                    index == 0 ? line.move(to: position(point)) : line.addLine(to: position(point))
+                }
+                var area = line
+                area.addLine(to: CGPoint(x: position(points.last!).x, y: size.height - yPad))
+                area.addLine(to: CGPoint(x: position(points[0]).x, y: size.height - yPad))
+                area.closeSubpath()
+                context.fill(area, with: .linearGradient(
+                    Gradient(colors: [Theme.accent.opacity(0.24), Theme.accent.opacity(0)]),
+                    startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+                context.stroke(line, with: .color(Theme.accent), lineWidth: 2.5)
+            }
+            if points.isEmpty {
+                Text("NO STRESS READINGS FOR THIS SESSION")
+                    .font(.caption.monospaced()).foregroundStyle(Theme.faint)
+            }
+        }
+    }
 }
 
 private struct PrimaryHistoryButton: ButtonStyle {
