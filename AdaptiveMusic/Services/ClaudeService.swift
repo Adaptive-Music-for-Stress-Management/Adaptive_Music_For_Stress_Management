@@ -33,7 +33,8 @@ final class ClaudeService: ObservableObject {
 
     enum ClaudeError: Error { case noKey, badResponse }
 
-    private func complete(_ prompt: String, maxTokens: Int = 700) async throws -> String {
+    private func complete(_ prompt: String, maxTokens: Int = 700,
+                          system: String = ClaudeService.system) async throws -> String {
         guard let key = apiKey, !key.isEmpty else { throw ClaudeError.noKey }
         var req = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
         req.httpMethod = "POST"
@@ -42,7 +43,7 @@ final class ClaudeService: ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": ClaudeService.model, "max_tokens": maxTokens,
-            "system": ClaudeService.system,
+            "system": system,
             "messages": [["role": "user", "content": prompt]],
         ])
         let (data, _) = try await URLSession.shared.data(for: req)
@@ -50,6 +51,26 @@ final class ClaudeService: ObservableObject {
               let content = j["content"] as? [[String: Any]] else { throw ClaudeError.badResponse }
         return content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
                       .joined()
+    }
+
+    func analyzeSession(points: [StressPoint], average: Double?) async throws -> String {
+        let compact = points.prefix(3600).map { ["seconds": round($0.x * 10) / 10,
+                                                "stress": round($0.y * 10) / 10] }
+        let data = try JSONSerialization.data(withJSONObject: compact)
+        let pointJSON = String(data: data, encoding: .utf8) ?? "[]"
+        let prompt = "Analyze this Adaptune session. Average stress score: " +
+            String(format: "%.1f", average ?? 0) + "/100. Time-series points: \(pointJSON). " +
+            "Identify the overall pattern, notable rises or recoveries, and one practical suggestion. " +
+            "Answer only JSON: {\"analysis\": \"...\"}"
+        let wellnessSystem = "You interpret wellness stress-session charts. Be concise and supportive. " +
+            "Do not diagnose medical conditions. Return only the requested JSON."
+        let reply = try await complete(prompt, maxTokens: 500, system: wellnessSystem)
+        guard let start = reply.firstIndex(of: "{"), let end = reply.lastIndex(of: "}"), start < end,
+              let object = try JSONSerialization.jsonObject(with: Data(reply[start...end].utf8)) as? [String: Any],
+              let analysis = object["analysis"] as? String, !analysis.isEmpty else {
+            throw ClaudeError.badResponse
+        }
+        return analysis
     }
 
     private func parseJSONArray(_ text: String) -> [[String: Any]] {

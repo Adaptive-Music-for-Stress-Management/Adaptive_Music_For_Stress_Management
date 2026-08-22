@@ -1,4 +1,6 @@
-# Adaptive Music for Stress Management — Mobile (iOS + watchOS)
+# Adaptune — Mobile (iOS + watchOS)
+
+**Tune your state. Find your calm.**
 
 The native mobile edition: a SwiftUI iPhone app with an embedded Apple Watch companion.
 It reads your pulse from the **camera + flashlight** or streams live heart data from an
@@ -20,6 +22,21 @@ It reads your pulse from the **camera + flashlight** or streams live heart data 
    Do the same for **AdaptiveMusicWatch**.
 4. Run the **AdaptiveMusic** scheme on your iPhone. The *Bundle SUNO Songs* build phase
    unzips `BPM_folder.zip` into the app bundle automatically.
+
+### Supabase (required for login and saved sessions)
+
+1. In Supabase Dashboard → **SQL Editor**, paste and run `supabase/schema.sql` once.
+   It creates `users`, `sessions`, the private `session-graphs` bucket, and user-only
+   Row Level Security policies.
+2. In **Project Settings → API**, copy the Project URL and anon/publishable key.
+3. Open `AdaptiveMusic/Info.plist` and paste them into:
+   - `SupabaseURL`
+   - `SupabaseAnonKey`
+
+The iOS app does not read a shell `.env` file. Those two `Info.plist` keys are the mobile
+equivalent. They are client-safe values; never paste a Supabase service-role key into the app.
+For the computer branch, the same values go in the root `.env` file as `SUPABASE_URL` and
+`SUPABASE_ANON_KEY`.
 
 ### Spotify (for the Personalize section)
 
@@ -44,12 +61,17 @@ It reads your pulse from the **camera + flashlight** or streams live heart data 
   see: *"I apologize, but you must first connect your apple watch to your apple mobile
   device."* (Install the watch app once from Xcode, or from the Watch app on iPhone.)
 
-## The dashboard
+## The landing page and dashboard
 
-Same four modals as the computer edition — **Graphs** (EEG stays blank on mobile: no
-Muse input here), **Meter**, **Personalize** (SUNO player + Spotify/Claude tabs), and
-**Relief** (Karaoke with synced lyrics, Breathe with the beat-locked circle and
-waveform, Play-along piano & drums — tap to play).
+The Adaptune landing page previews all six signal channels, live analysis and breathing,
+adaptive music, play/sing-along tools, Spotify personalization, and supported devices.
+Users must log in before the session dashboard is available.
+
+The account dashboard lists dated session cards. Opening one shows all six graph snapshots
+(grey **No reading** text for unavailable mobile EEG), the stress time series and average,
+and optional Claude analysis after the user enters an Anthropic API key. Live sessions retain
+the existing **Graphs**, **Meter**, **Personalize**, and **Relief** tools. AI songs use the
+inverse tempo `120 - ((user BPM // 10) * 10)`, clamped to 60–120 BPM.
 
 ## Project layout
 

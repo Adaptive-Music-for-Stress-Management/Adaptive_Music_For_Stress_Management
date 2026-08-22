@@ -6,7 +6,7 @@ import HealthKit
 /// (HKHealthStore.startWatchApp), runs the workout, and streams live heart data
 /// back to the phone.
 @main
-struct AdaptiveMusicWatchApp: App {
+struct AdaptuneWatchApp: App {
     @WKApplicationDelegateAdaptor(WatchAppDelegate.self) var delegate
 
     var body: some Scene {
@@ -31,6 +31,9 @@ struct WatchContentView: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            Text("ADAPTUNE")
+                .font(.caption2.weight(.semibold))
+                .tracking(2)
             Image(systemName: "heart.fill")
                 .font(.system(size: 30))
                 .foregroundStyle(.red)

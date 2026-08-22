@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct AdaptiveMusicApp: App {
+struct AdaptuneApp: App {
     @StateObject private var hub: SignalHub
     @StateObject private var suno: SunoPlayer
     @StateObject private var spotify: SpotifyService
@@ -11,6 +11,7 @@ struct AdaptiveMusicApp: App {
     @StateObject private var watch: WatchLink
     @StateObject private var relief: ReliefState
     @StateObject private var breathe: BreatheController
+    @StateObject private var account: SupabaseService
 
     init() {
         let hub = SignalHub()
@@ -27,6 +28,7 @@ struct AdaptiveMusicApp: App {
         _watch = StateObject(wrappedValue: WatchLink(hub: hub))
         _relief = StateObject(wrappedValue: ReliefState())
         _breathe = StateObject(wrappedValue: BreatheController(hub: hub, suno: suno, engine: engine))
+        _account = StateObject(wrappedValue: SupabaseService())
     }
 
     var body: some Scene {
@@ -41,6 +43,7 @@ struct AdaptiveMusicApp: App {
                 .environmentObject(watch)
                 .environmentObject(relief)
                 .environmentObject(breathe)
+                .environmentObject(account)
                 .preferredColorScheme(.dark)
         }
     }
@@ -67,18 +70,27 @@ struct Theme {
 
 struct RootView: View {
     @EnvironmentObject var hub: SignalHub
+    @EnvironmentObject var account: SupabaseService
 
     var body: some View {
         ZStack {
             Theme.bg.ignoresSafeArea()
-            if hub.stressedAtStart == nil {
-                FlowView()
-                    .transition(.opacity)
+            if !account.restored {
+                ProgressView("Opening Adaptune…")
+                    .tint(Theme.accent)
+            } else if account.user == nil {
+                LandingView().transition(.opacity.combined(with: .scale(scale: 0.985)))
+            } else if !account.showLiveSession {
+                SessionHistoryView().transition(.opacity.combined(with: .scale(scale: 0.985)))
+            } else if hub.stressedAtStart == nil {
+                FlowView().transition(.opacity.combined(with: .scale(scale: 0.985)))
             } else {
-                DashboardView()
-                    .transition(.opacity)
+                DashboardView().transition(.opacity.combined(with: .scale(scale: 0.985)))
             }
         }
-        .animation(.easeInOut(duration: 0.5), value: hub.stressedAtStart == nil)
+        .animation(.easeInOut(duration: 0.45), value: account.user != nil)
+        .animation(.easeInOut(duration: 0.45), value: account.showLiveSession)
+        .animation(.easeInOut(duration: 0.45), value: hub.stressedAtStart)
+        .task { await account.restore() }
     }
 }

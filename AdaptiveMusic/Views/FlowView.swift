@@ -14,9 +14,9 @@ struct FlowView: View {
         VStack(spacing: 24) {
             Spacer()
             VStack(spacing: 8) {
-                Text("Adaptive Music")
+                Text("Adaptune")
                     .font(.system(size: 30, weight: .bold))
-                Text("FOR STRESS MANAGEMENT")
+                Text("TUNE YOUR STATE. FIND YOUR CALM.")
                     .font(.system(size: 11, weight: .medium))
                     .tracking(4)
                     .foregroundStyle(Theme.muted)

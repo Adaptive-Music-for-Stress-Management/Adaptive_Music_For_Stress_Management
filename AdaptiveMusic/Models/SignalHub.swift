@@ -2,6 +2,11 @@ import Foundation
 import Combine
 import SwiftUI
 
+struct StressPoint: Codable, Equatable {
+    let x: Double
+    let y: Double
+}
+
 /// Which sensor feeds the dashboard.
 enum InputMode: String {
     case camera   // iPhone camera + flashlight PPG
@@ -52,6 +57,8 @@ final class SignalHub: ObservableObject {
     @Published var calibrationLeft: Double? = nil
     @Published var stress: Double? = nil
     @Published var stressLabel: StressLabel? = nil
+    @Published var stressHistory: [StressPoint] = []
+    @Published private(set) var sessionStartedAt = Date()
 
     // MARK: constants (identical to the computer edition)
     static let stressedBaseline = (bpm: 60.0, hrvDiff: 20.0)
@@ -74,6 +81,7 @@ final class SignalHub: ObservableObject {
 
     func startSession(stressed: Bool) {
         resetReadings()
+        sessionStartedAt = Date()
         stressedAtStart = stressed
         if stressed {
             baseline = SignalHub.stressedBaseline
@@ -99,7 +107,14 @@ final class SignalHub: ObservableObject {
         rrPrev = nil; hrvdEMA = nil
         baseT0 = nil; baseBpmSum = 0; baseBpmN = 0; baseHrvdSum = 0; baseHrvdN = 0
         stress = nil; stressLabel = nil
+        stressHistory = []
         baseline = nil; calibrating = false; calibrationLeft = nil
+    }
+
+    func endSession() {
+        resetReadings()
+        inputMode = nil
+        stressedAtStart = nil
     }
 
     /// One heartbeat, described by its RR interval in milliseconds.
@@ -159,16 +174,17 @@ final class SignalHub: ObservableObject {
         let raw = 100.0 * terms.reduce(0, +) / Double(terms.count)
         stress = stress == nil ? raw : SignalHub.emaAlpha * raw + (1 - SignalHub.emaAlpha) * stress!
         stressLabel = StressLabel.from(stress!)
+        stressHistory.append(StressPoint(x: Date().timeIntervalSince(sessionStartedAt), y: stress!))
     }
 
-    /// BPM bucket for the SUNO library: clamp((bpm // 10) * 10 - 10, 60, 150).
+    /// Inverse tempo: clamp(120 - floor-to-ten(user BPM), 60, 120).
     var bucket: Int? {
         guard let bpm, beatFresh else { return nil }
-        return min(150, max(60, Int(bpm / 10) * 10 - 10))
+        return min(120, max(60, 120 - Int(bpm / 10) * 10))
     }
 
     var baselineBucket: Int {
         guard let baseline else { return 60 }
-        return min(150, max(60, Int(baseline.bpm / 10) * 10))
+        return min(120, max(60, 120 - Int(baseline.bpm / 10) * 10))
     }
 }
