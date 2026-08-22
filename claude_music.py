@@ -150,7 +150,7 @@ _SYS = (
     "was requested — no prose, no code fences."
 )
 
-def _complete(user_prompt, api_key=None, model=None, max_tokens=700):
+def _complete(user_prompt, api_key=None, model=None, max_tokens=700, system=None):
     key = api_key or ANTHROPIC_API_KEY
     mdl = model or ANTHROPIC_MODEL
     if not key:
@@ -158,14 +158,14 @@ def _complete(user_prompt, api_key=None, model=None, max_tokens=700):
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=key)
-        msg = client.messages.create(model=mdl, max_tokens=max_tokens, system=_SYS,
+        msg = client.messages.create(model=mdl, max_tokens=max_tokens, system=system or _SYS,
                                      messages=[{"role": "user", "content": user_prompt}])
         return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
     except ImportError:
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                                    "content-type": "application/json"},
-                          json={"model": mdl, "max_tokens": max_tokens, "system": _SYS,
+                          json={"model": mdl, "max_tokens": max_tokens, "system": system or _SYS,
                                 "messages": [{"role": "user", "content": user_prompt}]},
                           timeout=30)
         r.raise_for_status()
@@ -186,6 +186,34 @@ def _parse_json(text):
             except Exception:
                 continue
     return None
+
+
+def analyze_stress_session(points, average, api_key=None, model=None):
+    """Return a concise wellness-oriented interpretation of one saved session."""
+    cleaned = []
+    for point in (points or [])[:3600]:
+        if not isinstance(point, dict):
+            continue
+        try:
+            x, y = float(point.get("x")), float(point.get("y"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            cleaned.append({"seconds": round(x, 1), "stress": round(max(0, min(100, y)), 1)})
+    avg = max(0.0, min(100.0, float(average or 0.0)))
+    system = (
+        "You interpret wellness stress-session charts. Be concise, supportive, and evidence-based. "
+        "Do not diagnose medical conditions. Return only the requested JSON."
+    )
+    prompt = (
+        f"Analyze this Adaptune session. Average stress score: {avg:.1f}/100. "
+        f"Time-series points: {json.dumps(cleaned)}. Identify the overall pattern, notable rises or "
+        "recoveries, and one practical suggestion. Answer as JSON: {\"analysis\": \"...\"}"
+    )
+    data = _parse_json(_complete(prompt, api_key=api_key, model=model, max_tokens=500, system=system))
+    if not isinstance(data, dict) or not str(data.get("analysis") or "").strip():
+        raise RuntimeError("Claude did not return a session analysis")
+    return str(data["analysis"]).strip()
 
 
 # ------------------- song picking (vibe / artist / song modes) -------------------

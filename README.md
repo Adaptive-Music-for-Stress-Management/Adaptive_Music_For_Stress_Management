@@ -1,6 +1,8 @@
-# Adaptive Music for Stress Management
+# Adaptune
 
-A closed-loop biofeedback app: it reads your heart (and brain) in real time, scores your
+**Tune your state. Find your calm.**
+
+A closed-loop biofeedback app: Adaptune reads your heart (and brain) in real time, scores your
 stress on a 0–100 meter, and adapts the music you hear to bring it down.
 
 Two editions live in this repository:
@@ -22,7 +24,7 @@ This branch carries both: the computer app at the repo root and the Xcode projec
                      Calm 0–33 · Mild-stress 33–66 · Stressed 66–100
                                            │
                                            ▼
-        ┌── SUNO AI songs (BPM_folder/60…150, three per folder, no-repeat cycles)
+        ┌── SUNO AI songs (inverse user BPM → BPM_folder/60…120, no-repeat cycles)
         ├── Spotify + Claude personalization (Vibe · Artist · Playlist · Song)
         └── Relief: Karaoke (instrumental + synced lyrics) · Breathe · Play-along
 ```
@@ -48,7 +50,7 @@ This branch carries both: the computer app at the repo root and the Xcode projec
   value, colored green / yellow / red, over a horizontal meter with all three labels.
   The empty card below the meter is where the Relief UI renders.
 - **Personalize** — the SUNO AI player (song name, adjustable timeline, « ▶ »): the
-  current song always comes from the `((BPM // 10) * 10) - 10` folder (clamped 60–150), fading
+  current song always comes from the `120 - ((BPM // 10) * 10)` folder (clamped 60–120), fading
   out and in when the bucket changes, never repeating a song within a cycle. Below it,
   enter your **Anthropic API key** → **Connect Spotify** (Premium required) → pick
   **Vibe / Artist / Playlist / Song**; Claude names real songs, Spotify Search resolves
@@ -58,13 +60,42 @@ This branch carries both: the computer app at the repo root and the Xcode projec
   - **Karaoke** — Claude finds an *instrumental version* of the song and LRCLIB supplies
     Spotify-style time-synced lyrics; the track name and timeline switch to the
     instrumental. Pausing the song pauses the lyrics.
-  - **Breathe** — an expanding/contracting circle locked to the actual beats of the
-    song (live waveform-spike analysis) at `((BPM // 10) * 10) − 10`, re-targeting as
-    your heart slows until it reaches your baseline. A waveform visualizer rides below
-    the circle. Spotify songs are blocked here — only the AI-generated songs work.
+  - **Breathe** — an expanding/contracting circle driven only by the user's live heart
+    rate at `5 × log10(user BPM)`, recalculated whenever BPM changes. Expansion and
+    contraction take equal time. Spotify songs are blocked here — only AI-generated
+    songs work.
   - **Play-along** — a piano (keys **A–J** = C–B, **W/E** = C♯/D♯, **T/Y/U** = F♯/G♯/A♯)
     and a drum kit (**A S D F G H J K** = kick, hi-hat, snare, low/mid/high tom, crash,
     ride). Tap to play on mobile.
+
+## Supabase setup (accounts and saved sessions)
+
+1. In the Supabase dashboard, open **SQL Editor**, paste
+   [`supabase/schema.sql`](supabase/schema.sql), and run it once. This creates the
+   `users` and `sessions` tables, private `session-graphs` Storage bucket, and Row Level
+   Security policies that restrict every row and image to its signed-in user.
+2. In **Project Settings → API**, copy the Project URL and anon/publishable key.
+3. On `final_computer`, create the local environment file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Then put the values here (the real `.env` is ignored by Git):
+
+   ```dotenv
+   SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+   SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+   ```
+
+4. On `final_mobile`, open `AdaptiveMusic/Info.plist` and paste the same two values into
+   `SupabaseURL` and `SupabaseAnonKey`. These are client-safe project values; do **not** put
+   a Supabase service-role key in either app.
+
+The authenticated dashboard stores the account email in `users`, session dates and stress
+coordinates/average in `sessions`, and six graph snapshot paths in `graph_images`. A channel
+that was not read is deliberately omitted and appears as grey **No reading for this session**
+text when that session is opened.
 
 ## Running the computer edition
 

@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 requests
 anthropic
+python-dotenv>=1.0,<2
 numpy>=1.26
 scipy>=1.11
 pylsl>=1.18,<2

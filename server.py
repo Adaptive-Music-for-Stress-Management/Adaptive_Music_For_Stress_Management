@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Adaptive Music for Stress Management — computer edition.
+Adaptune — computer edition.
 
 Signal path
     Muse 2 headband ── MuseLSL (EEG 256 Hz + PPG 64 Hz) ──► this server
@@ -19,7 +19,7 @@ Baseline
     EEG is displayed and classified immediately; only BPM and HRV are baselined.
 
 Music
-    SUNO AI library:   BPM_folder/<60..150>/song_*.mp3 — bucket = clamp((bpm//10)*10 - 10, 60, 150),
+    SUNO AI library:   BPM_folder/<60..120>/song_*.mp3 — bucket = clamp(120 - (bpm//10)*10, 60, 120),
                        random song per bucket, no repeats within a cycle (cycle = all songs in the folder).
     Spotify + Claude:  the user's Anthropic key drives vibe / artist / playlist / song personalization,
                        karaoke (instrumental + LRCLIB synced lyrics). Spotify Premium required (Web
@@ -39,6 +39,11 @@ import threading
 import webbrowser
 import urllib.parse
 
+from dotenv import load_dotenv
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(ROOT, ".env"))
+
 from eeg_pipeline import (
     BANDS,
     EEG_CHANNELS,
@@ -49,7 +54,6 @@ from eeg_pipeline import (
 )
 
 # ============================ CONFIG ============================
-ROOT       = os.path.dirname(os.path.abspath(__file__))
 MUSIC_DIR  = os.environ.get("STRESS_MUSIC", os.path.join(ROOT, "BPM_folder"))
 MUSIC_ZIP  = os.path.join(ROOT, "BPM_folder.zip")
 STATIC_DIR = os.path.join(ROOT, "static")
@@ -66,6 +70,8 @@ EEG_MODEL_PATH = os.environ.get(
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 SPOTIFY_REDIRECT_URI  = os.environ.get("SPOTIFY_REDIRECT_URI", f"http://127.0.0.1:{PORT}/callback")
+SUPABASE_URL           = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_ANON_KEY      = os.environ.get("SUPABASE_ANON_KEY", "")
 SPOTIFY_SCOPES = ("streaming user-read-email user-read-private user-modify-playback-state "
                   "user-read-playback-state playlist-read-private playlist-read-collaborative")
 
@@ -493,7 +499,7 @@ import requests as _requests
 
 import claude_music
 
-app = FastAPI(title="Adaptive Music for Stress Management")
+app = FastAPI(title="Adaptune")
 if os.path.isdir(MUSIC_DIR):
     app.mount("/music", StaticFiles(directory=MUSIC_DIR), name="music")
 if os.path.isdir(STATIC_DIR):
@@ -507,6 +513,16 @@ def index(request: Request):
     resp = FileResponse(os.path.join(STATIC_DIR, "index.html"),
                         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
     return _with_cookie(resp, sid)
+
+
+@app.get("/api/config")
+def public_config():
+    """Browser-safe public configuration. Supabase anon keys are designed for clients."""
+    return {
+        "supabase_url": SUPABASE_URL,
+        "supabase_anon_key": SUPABASE_ANON_KEY,
+        "supabase_configured": bool(SUPABASE_URL and SUPABASE_ANON_KEY),
+    }
 
 
 @app.post("/api/input")
@@ -618,7 +634,7 @@ def snapshot():
             "calibrating": calibrating,
             "calibration_left": None if cal_left is None else round(cal_left, 1),
             "baseline": HUB.baseline,
-            "bpm_folders": _bpm_folders_for_stress_label(stress_label),
+            "song_bucket": _song_bucket_for_bpm(HUB.bpm) if beats_fresh else None,
             "muse_streaming": (now - HUB.muse_last_ts) < 5.0,
             "muse_error": HUB.muse_error,
             "eeg_model_ready": _EEG_PREDICTOR.available,
@@ -639,26 +655,17 @@ async def ws(sock: WebSocket):
 
 
 # ---------------------------------------------------------------------------
-# SUNO AI library — stress-driven BPM folders with a no-repeat cycle per folder.
+# SUNO AI library — inverse heart-rate BPM folders with a no-repeat cycle.
 # ---------------------------------------------------------------------------
 PLAYED = {}                    # bucket -> set(filenames served this cycle)
 PLAYED_LOCK = threading.Lock()
 
-STRESS_BPM_FOLDERS = {
-    "Calm": (120, 130, 140, 150),
-    "Mild-stress": (90, 100, 110, 120),
-    "Stressed": (60, 70, 80, 90),
-}
-
-
-def _bpm_folders_for_stress_label(label):
-    """Playable folders for a stress label; unknown values use mild-stress."""
-    return STRESS_BPM_FOLDERS.get(label, STRESS_BPM_FOLDERS["Mild-stress"])
-
-
-def _bucket_for_stress_label(label):
-    """Pick a folder in the label's therapeutic range, never from live BPM."""
-    return random.choice(_bpm_folders_for_stress_label(label))
+def _song_bucket_for_bpm(bpm):
+    """Inverse therapeutic tempo: clamp(120 - floor-to-ten(user BPM), 60, 120)."""
+    if bpm is None or not math.isfinite(float(bpm)) or float(bpm) <= 0:
+        return 60
+    bucket = 120 - (int(float(bpm) // 10) * 10)
+    return max(60, min(120, bucket))
 
 def _tracks_in(bucket):
     folder = os.path.join(MUSIC_DIR, str(bucket))
@@ -669,15 +676,13 @@ def _tracks_in(bucket):
     return sorted(out)
 
 @app.get("/api/suno/next")
-def api_suno_next(bucket: int = None, stress_label: str = None, current: str = ""):
-    """Next SUNO song for a stress-selected BPM folder.
+def api_suno_next(bucket: int = None, current: str = ""):
+    """Next SUNO song for the inverse heart-rate BPM folder.
     Never repeats a song until the whole folder (cycle of 3) has been played."""
     if bucket is None:
-        if stress_label is None:
-            with HUB.lock:
-                stress_label = _stress_label(HUB.stress)
-        bucket = _bucket_for_stress_label(stress_label)
-    bucket = max(60, min(150, int(bucket // 10) * 10))
+        with HUB.lock:
+            bucket = _song_bucket_for_bpm(HUB.bpm)
+    bucket = max(60, min(120, int(bucket // 10) * 10))
     files = _tracks_in(bucket)
     if not files:
         return JSONResponse({"url": None, "name": None, "bucket": bucket, "error": "no tracks"})
@@ -779,6 +784,35 @@ async def api_anthropic_key(request: Request):
     if body.get("model"):
         s["model"] = (body.get("model") or "").strip() or None
     return _with_cookie(JSONResponse({"ok": True, "key_set": bool(s["key"])}), sid)
+
+
+@app.post("/api/session-analysis")
+async def api_session_analysis(request: Request):
+    """Analyze an authenticated user's saved chart data with their session-only key."""
+    sid, s = _session(request)
+    if not s.get("key"):
+        return _with_cookie(JSONResponse({"ok": False, "error": "anthropic_key_required"},
+                                         status_code=400), sid)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    points = body.get("stress_points") or []
+    average = body.get("avg_stress")
+    if not isinstance(points, list) or len(points) > 3600:
+        return _with_cookie(JSONResponse({"ok": False, "error": "invalid_stress_points"},
+                                         status_code=400), sid)
+    try:
+        analysis = await run_in_threadpool(
+            claude_music.analyze_stress_session,
+            points,
+            average,
+            s["key"],
+            s.get("model"),
+        )
+    except Exception as exc:
+        return _with_cookie(JSONResponse({"ok": False, "error": str(exc)}, status_code=502), sid)
+    return _with_cookie(JSONResponse({"ok": True, "analysis": analysis}), sid)
 
 
 @app.get("/api/spotify/status")
@@ -1184,7 +1218,7 @@ async def api_karaoke(request: Request):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     url = f"http://127.0.0.1:{PORT}"
-    print(f"[app] Adaptive Music dashboard at {url}")
+    print(f"[app] Adaptune at {url}")
     print("[muse] MuseLSL will scan Bluetooth for Muse 2 EEG (256 Hz) and PPG (64 Hz)")
     try:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Adaptive Music · Stress Management</title>
+<title>Adaptune · Tune your state. Find your calm.</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -15,11 +15,98 @@
 </head>
 <body>
 
+<!-- ================= public landing page ================= -->
+<div id="landing" class="portal-page">
+  <nav class="landing-nav">
+    <a class="landing-brand" href="#landing"><b>ADAPTUNE</b><span>Tune your state. Find your calm.</span></a>
+    <div class="landing-actions"><a href="#features">Explore</a><a href="#authCard" class="btn portal-btn">Log in</a></div>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-copy">
+      <div class="eyebrow mono">REAL-TIME BIOFEEDBACK · ADAPTIVE SOUND</div>
+      <h1>Music that listens<br>before it plays.</h1>
+      <p>Adaptune turns live heart and brain signals into a personal stress picture, then shapes your music around the state you are in.</p>
+      <a href="#authCard" class="btn portal-btn hero-cta">Start your first session</a>
+    </div>
+    <div class="auth-card" id="authCard">
+      <div class="auth-tabs"><button class="on" data-auth-mode="signin">Log in</button><button data-auth-mode="signup">Create account</button></div>
+      <h2 id="authTitle">Welcome back</h2>
+      <p id="authIntro">Open your private Adaptune session dashboard.</p>
+      <form id="authForm">
+        <label>Email<input type="email" id="authEmail" autocomplete="email" required placeholder="you@example.com"></label>
+        <label>Password<input type="password" id="authPassword" autocomplete="current-password" minlength="6" required placeholder="At least 6 characters"></label>
+        <button class="btn portal-btn" id="authSubmit" type="submit">Log in</button>
+      </form>
+      <div class="portal-message mono" id="authMessage"></div>
+      <div class="config-note mono" id="supabaseNotice" hidden>SUPABASE_URL and SUPABASE_ANON_KEY are not configured.</div>
+    </div>
+  </section>
+
+  <section class="feature-stack" id="features">
+    <article class="feature-row">
+      <div class="preview-card graph-preview">
+        <button class="carousel-arrow prev" data-carousel="signals" aria-label="Previous signal">‹</button>
+        <div class="preview-stage"><div class="preview-kicker mono" id="landingGraphName">BPM</div><canvas id="landingGraph"></canvas></div>
+        <button class="carousel-arrow next" data-carousel="signals" aria-label="Next signal">›</button>
+      </div>
+      <div class="feature-copy"><span>01</span><h2>Live data streaming</h2><p>Move through six synchronized channels: BPM, HRV differential, EEG right brain, EEG left brain, EEG right ear, and EEG left ear. Every reading stays clearly labeled as it streams.</p></div>
+    </article>
+
+    <article class="feature-row reverse">
+      <div class="preview-card analysis-preview">
+        <button class="carousel-arrow prev" data-carousel="analysis" aria-label="Previous analysis view">‹</button>
+        <div class="preview-stage" id="analysisMeterPreview"><div class="demo-score">42.8</div><div class="demo-meter"><i></i></div><div class="demo-legend"><span>Calm</span><span>Mild-stress</span><span>Stressed</span></div></div>
+        <div class="preview-stage" id="analysisBreathePreview" hidden><div class="demo-breathe"></div><div class="mono preview-kicker">BREATHE WITH THE CIRCLE</div></div>
+        <button class="carousel-arrow next" data-carousel="analysis" aria-label="Next analysis view">›</button>
+      </div>
+      <div class="feature-copy"><span>02</span><h2>Live analysis</h2><p>Deep-learning EEG inference and algorithmic heart metrics calculate and visualize stress against your personal baseline, while a paced breathing view helps guide recovery.</p></div>
+    </article>
+
+    <article class="feature-row">
+      <div class="preview-card music-preview">
+        <div class="album-orbit">♪</div><div><div class="preview-kicker mono">ADAPTIVE QUEUE</div><h3 id="demoSongName">A calmer track is ready</h3><div class="demo-progress"><i></i></div><div class="demo-controls"><button id="demoPrev">«</button><button id="demoPlay">▶</button><button id="demoNext">»</button></div></div>
+      </div>
+      <div class="feature-copy"><span>03</span><h2>Adaptive music</h2><p>Your live BPM selects an inverse-tempo music folder, curating tracks intended to move you toward calm while keeping pause and skip controls in your hands.</p></div>
+    </article>
+
+    <article class="feature-row reverse">
+      <div class="preview-card play-preview">
+        <button class="carousel-arrow prev" data-carousel="play" aria-label="Previous play mode">‹</button>
+        <div class="preview-stage" id="landingPlayStage"></div>
+        <button class="carousel-arrow next" data-carousel="play" aria-label="Next play mode">›</button>
+      </div>
+      <div class="feature-copy"><span>04</span><h2>Play/sing along</h2><p>Play a piano, build a beat on the drums, or follow synchronized karaoke lyrics so regulating stress can feel active, musical, and personal.</p></div>
+    </article>
+
+    <article class="feature-row">
+      <div class="preview-card spotify-preview"><div class="spotify-mark">●</div><div><div class="preview-kicker mono">YOUR LIBRARY</div><h3>Connect Spotify</h3><div class="demo-tabs"><i>Vibe</i><i>Artist</i><i>Playlists</i><i>Song</i></div><div class="demo-input">What do you want to hear?</div></div></div>
+      <div class="feature-copy"><span>05</span><h2>Connect your Spotify</h2><p>Pull music from your Spotify account through a vibe, a favorite artist, one of your playlists, or a specific song—with Claude helping shape the choice.</p></div>
+    </article>
+  </section>
+
+  <section class="supported"><div class="eyebrow mono">SUPPORTED DEVICES</div><h2>Use the sensors already around you.</h2><p>Adaptune supports Muse 2 on computer, Apple Watch for live heart readings, or direct pulse sensing from the iPhone camera and flashlight.</p><div class="device-list"><span>Muse 2</span><span>Apple Watch</span><span>iPhone</span></div></section>
+  <footer><b>ADAPTUNE</b><span>Tune your state. Find your calm.</span></footer>
+</div>
+
+<!-- ================= authenticated session history ================= -->
+<div id="accountDash" class="portal-page account-page" hidden>
+  <header class="account-header"><div class="landing-brand"><b>ADAPTUNE</b><span>Tune your state. Find your calm.</span></div><div class="spacer"></div><span class="mono account-email" id="accountEmail"></span><button class="btn" id="signOutBtn">Sign out</button></header>
+  <main class="account-main"><div class="account-heading"><div><div class="eyebrow mono">YOUR DASHBOARD</div><h1>Past sessions</h1><p>Open a session to revisit every signal and your stress response over time.</p></div><button class="btn portal-btn" id="startSessionBtn">Start live session</button></div><div class="session-grid" id="sessionGrid"></div><div class="empty-sessions" id="emptySessions" hidden>No saved sessions yet. Start a live session to create one.</div></main>
+</div>
+
+<div class="session-overlay" id="sessionOverlay" hidden>
+  <div class="session-modal"><button class="modal-close" id="sessionClose" aria-label="Close">×</button><div class="eyebrow mono" id="sessionDate"></div><h1>Session details</h1>
+    <section class="session-panel"><h2>Six live channels</h2><div class="saved-graphs" id="savedGraphs"></div></section>
+    <section class="session-panel stress-session-panel"><div class="saved-stress-chart"><h2>Stress over time</h2><canvas id="savedStressCanvas"></canvas></div><aside><div class="average-label mono">AVERAGE STRESS</div><div class="average-score" id="savedAverage">—</div><label>Anthropic API key<input type="password" id="analysisKey" placeholder="sk-ant-…"></label><button class="btn portal-btn" id="analyzeSessionBtn">Get AI analysis</button><div class="portal-message" id="analysisResult"></div></aside></section>
+  </div>
+</div>
+
 <!-- ================= setup flow ================= -->
-<div id="flow">
+<div id="flow" hidden>
   <section class="screen active" id="scr-device">
     <div class="flow-card">
-      <h1>Adaptive Music <span>for stress management</span></h1>
+      <h1>Adaptune <span>Tune your state. Find your calm.</span></h1>
       <p class="flow-sub">Choose your device</p>
       <div class="flow-opts">
         <button class="flow-opt" data-go="mobile">
@@ -92,10 +179,11 @@
 <!-- ================= dashboard ================= -->
 <div id="dash" hidden>
   <header>
-    <div class="brand"><b>ADAPTIVE MUSIC</b><span>STRESS MANAGEMENT</span></div>
+    <div class="brand"><b>ADAPTUNE</b><span>TUNE YOUR STATE. FIND YOUR CALM.</span></div>
     <div class="pill mono" id="inputPill">—</div>
     <div class="pill mono" id="calPill" hidden>calibrating…</div>
     <div class="spacer"></div>
+    <button class="pill header-action" id="endSessionBtn">END &amp; SAVE</button>
     <div class="pill mono" id="clock">00:00:00</div>
   </header>
 
@@ -237,6 +325,8 @@
 
 <audio id="audioA" preload="auto"></audio>
 <audio id="audioB" preload="auto"></audio>
-<script src="/static/app.js?v=eeg-labels-20260818"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/app.js?v=adaptune-20260821"></script>
+<script src="/static/portal.js?v=adaptune-20260821"></script>
 </body>
 </html>

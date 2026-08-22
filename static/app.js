@@ -1,5 +1,5 @@
 /* ============================================================
-   Adaptive Music for Stress Management — dashboard logic
+   Adaptune — live dashboard logic
    Sections: utils · flow · websocket · graphs · meter · SUNO
              player · Spotify/Claude personalize · karaoke ·
              breathe · play-along
@@ -62,8 +62,11 @@ async function answerStressed(stressed) {
   try { await fetch("/api/baseline", {method:"POST", headers:{"Content-Type":"application/json"},
                                       body: JSON.stringify({stressed})}); } catch(e){}
   stressLabelSeen = null;
-  sunoStressLabel = null;
-  sunoStressBucket = null;
+  sunoTarget = null;
+  sessionStressPoints = [];
+  sessionGraphImages = {};
+  sessionStartedAt = Date.now();
+  lastRecordedStressSecond = -1;
   const flow = $("flow");
   flow.classList.add("fade-out");
   setTimeout(() => { flow.hidden = true; }, 450);
@@ -76,6 +79,10 @@ $("stressedNo").addEventListener("click", () => answerStressed(false));
 /* ============================ 2 · websocket ============================ */
 let S = null;                    // latest snapshot from the server
 let lastBeatSeq = -1;
+let sessionStartedAt = Date.now();
+let sessionStressPoints = [];
+let sessionGraphImages = {};
+let lastRecordedStressSecond = -1;
 function connectWS() {
   const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
   ws.onmessage = ev => {
@@ -95,6 +102,13 @@ function onSnapshot(s, beat) {
   sunoTick(s);
   breatheTick(s);
   adaptSpotifyToStress(s);
+  if (!$('dash').hidden && s.stress != null) {
+    const second = Math.max(0, Math.round((Date.now() - sessionStartedAt) / 1000));
+    if (second !== lastRecordedStressSecond) {
+      lastRecordedStressSecond = second;
+      sessionStressPoints.push({x: second, y: Number(s.stress)});
+    }
+  }
 }
 
 async function adaptSpotifyToStress(s) {
@@ -206,9 +220,23 @@ function updateGraphs(s, beat) {
       }
     }
     drawTile(t);
+    if (active && t.cv.width && t.cv.height) sessionGraphImages[g.key] = t.cv.toDataURL("image/png");
   }
   if (beat) glowValues();
 }
+
+window.AdaptuneSession = {
+  snapshot() {
+    const values = sessionStressPoints.map(point => point.y).filter(Number.isFinite);
+    return {
+      started_at: new Date(sessionStartedAt).toISOString(),
+      ended_at: new Date().toISOString(),
+      graph_images: {...sessionGraphImages},
+      stress_points: sessionStressPoints.slice(),
+      avg_stress: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
+    };
+  },
+};
 function drawTile(t) {
   const cv = t.cv, r = cv.getBoundingClientRect();
   if (!r.width || !r.height) return;
@@ -293,13 +321,8 @@ async function claimAudio(src) {
 const sunoEls = [$("audioA"), $("audioB")];
 let sunoIdx = 0, sunoPlaying = false, sunoFetching = false;
 let sunoBucket = null;                 // bucket of the audible song
-let sunoStressLabel = null, sunoStressBucket = null;
+let sunoTarget = null;
 const SUNO_VOL = 0.9, FADE_MS = 1100;
-const SUNO_STRESS_FOLDERS = Object.freeze({
-  "Calm": [120, 130, 140, 150],
-  "Mild-stress": [90, 100, 110, 120],
-  "Stressed": [60, 70, 80, 90],
-});
 sunoEls.forEach(el => { el.volume = 0; });
 
 function fadeEl(el, to, ms) {
@@ -365,24 +388,23 @@ async function sunoLoad(bucket, autoplay) {
   } finally { sunoFetching = false; }
 }
 
-// Choose a fresh BPM folder only for a new stress label. A temporary missing
-// sensor value keeps the existing selection instead of causing a song switch.
-function updateSunoStressBucket(label) {
-  const effectiveLabel = label || sunoStressLabel || "Mild-stress";
-  if (effectiveLabel === sunoStressLabel && sunoStressBucket != null) return false;
-  const folders = SUNO_STRESS_FOLDERS[effectiveLabel] || SUNO_STRESS_FOLDERS["Mild-stress"];
-  sunoStressLabel = effectiveLabel;
-  sunoStressBucket = folders[Math.floor(Math.random() * folders.length)];
+// Inverse tempo rule: 120 - floor-to-ten(user BPM), clamped to 60...120.
+// A temporary missing reading keeps the last target instead of interrupting music.
+function updateSunoTarget(bucket) {
+  if (bucket == null) return false;
+  const next = clamp(Math.floor(Number(bucket) / 10) * 10, 60, 120);
+  if (next === sunoTarget) return false;
+  sunoTarget = next;
   return true;
 }
 function sunoTargetBucket() {
-  updateSunoStressBucket(S && S.stress_label);
-  return sunoStressBucket || 90;
+  updateSunoTarget(S && S.song_bucket);
+  return sunoTarget || 60;
 }
 function sunoTick(s) {
   if (!sunoPlaying || sunoFetching || audioSource !== "suno") return;
-  if (!updateSunoStressBucket(s.stress_label)) return;
-  if (sunoBucket != null && sunoBucket !== sunoStressBucket) sunoLoad(sunoStressBucket);
+  if (!updateSunoTarget(s.song_bucket)) return;
+  if (sunoBucket != null && sunoBucket !== sunoTarget) sunoLoad(sunoTarget);
 }
 $("sunoPlay").addEventListener("click", async () => {
   const el = sunoEls[sunoIdx];
@@ -479,7 +501,7 @@ async function maybeInitSpotify() {
   const tok = await spToken();
   if (!tok) return;
   spPlayer = new Spotify.Player({
-    name: "Adaptive Music Dashboard", volume: 0.9,
+    name: "Adaptune", volume: 0.9,
     getOAuthToken: cb => spToken().then(t => t && cb(t)),
   });
   spPlayer.addListener("ready", ({device_id}) => { spDeviceId = device_id; });
