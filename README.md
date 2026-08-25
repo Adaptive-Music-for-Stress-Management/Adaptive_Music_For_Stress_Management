@@ -71,7 +71,7 @@ The account dashboard lists dated session cards. Opening one shows all six graph
 (grey **No reading** text for unavailable mobile EEG), the stress time series and average,
 and optional Claude analysis after the user enters an Anthropic API key. Live sessions retain
 the existing **Graphs**, **Meter**, **Personalize**, and **Relief** tools. AI songs use the
-inverse tempo `120 - ((user BPM // 10) * 10)`, clamped to 60–120 BPM.
+inverse tempo `210 - ((user BPM // 10) * 10)`, clamped to 60–150 BPM.
 
 ## Project layout
 

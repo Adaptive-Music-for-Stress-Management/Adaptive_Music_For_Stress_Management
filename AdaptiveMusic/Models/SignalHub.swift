@@ -177,14 +177,14 @@ final class SignalHub: ObservableObject {
         stressHistory.append(StressPoint(x: Date().timeIntervalSince(sessionStartedAt), y: stress!))
     }
 
-    /// Inverse tempo: clamp(120 - floor-to-ten(user BPM), 60, 120).
+    /// Inverse tempo: clamp(210 - floor-to-ten(user BPM), 60, 150).
     var bucket: Int? {
         guard let bpm, beatFresh else { return nil }
-        return min(120, max(60, 120 - Int(bpm / 10) * 10))
+        return min(150, max(60, 210 - Int(bpm / 10) * 10))
     }
 
     var baselineBucket: Int {
         guard let baseline else { return 60 }
-        return min(120, max(60, 120 - Int(baseline.bpm / 10) * 10))
+        return min(150, max(60, 210 - Int(baseline.bpm / 10) * 10))
     }
 }

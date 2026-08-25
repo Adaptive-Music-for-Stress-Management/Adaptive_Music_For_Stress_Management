@@ -3,7 +3,7 @@ import AVFoundation
 import Combine
 
 /// SUNO AI library player. Live heart rate selects an inverse BPM folder:
-/// clamp(120 - floor-to-ten(user BPM), 60...120).
+/// clamp(210 - floor-to-ten(user BPM), 60...150).
 ///   random song per bucket, no repeats until the whole folder (cycle of 3) has played,
 ///   fade OUT - fade IN on every switch, and an AVAudioEngine tap for the waveform visualizer.
 final class SunoPlayer: NSObject, ObservableObject {
@@ -225,7 +225,7 @@ final class SunoPlayer: NSObject, ObservableObject {
                 node.stop()
                 node.scheduleFile(file, at: nil)
                 node.volume = 0
-                self.songName = url.lastPathComponent
+                self.songName = url.deletingPathExtension().lastPathComponent
                 self.bucket = newBucket
                 self.duration = Double(file.length) / file.processingFormat.sampleRate
                 self.currentTime = 0
