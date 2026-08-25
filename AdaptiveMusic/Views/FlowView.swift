@@ -59,9 +59,14 @@ struct FlowView: View {
 
     private var cameraStep: some View {
         VStack(spacing: 14) {
-            Text("Cover the rear lens with your fingertip while the flashlight shines beside it.\nOn a three-lens iPhone, use the single lens on the right.")
+            Text("Cover the main 1× rear lens and the flashlight with your fingertip. Hold still with light, even pressure.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Theme.muted)
+            if !camera.activeCameraName.isEmpty {
+                Text("Using \(camera.activeCameraName)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Theme.faint)
+            }
             if camera.permissionDenied {
                 Text("Camera access is required — enable it in Settings → Privacy → Camera.")
                     .font(.footnote)

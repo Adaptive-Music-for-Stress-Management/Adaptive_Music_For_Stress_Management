@@ -14,6 +14,7 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
     @Published var permissionDenied = false
     @Published var fingerDetected = false
     @Published var errorMessage: String? = nil
+    @Published private(set) var activeCameraName = ""
 
     private let hub: SignalHub
     private let session = AVCaptureSession()
@@ -37,6 +38,14 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
     private var missingFingerFrames = 0
     private var exposureLockedForFinger = false
     private var frameCount = 0
+    private var contactConfidence = 0
+    private var opticalFingerPresent = false
+
+    // Contact acquisition is intentionally faster than contact release. Two
+    // convincingly red frames acquire a finger, while brief dim frames caused
+    // by exposure settling do not discard the pulse filter.
+    private static let contactAcquireScore = 4
+    private static let contactMaximumScore = 12
 
     init(hub: SignalHub) {
         self.hub = hub
@@ -109,11 +118,11 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         publishRunning(true)
     }
 
-    /// On a three-camera iPhone, the setup shown in the app's instructions
-    /// places the fingertip over the single upper-right lens. That is the
-    /// physical telephoto camera, so do not allow a virtual multi-camera
-    /// device to silently switch us to a different lens. Phones without that
-    /// lens use their rear 1× wide camera instead.
+    /// PPG needs the physical camera that receives the strongest illumination
+    /// from the adjacent torch. Prefer the main 1× wide camera on every iPhone;
+    /// unlike a virtual multi-camera device it cannot silently switch lenses.
+    /// Telephoto remains a fallback for unusual devices where it is the only
+    /// torch-capable rear camera.
     private func fingertipCamera() -> AVCaptureDevice? {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInTelephotoCamera, .builtInWideAngleCamera],
@@ -121,9 +130,9 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
             position: .back
         )
         return discovery.devices.first(where: {
-            $0.deviceType == .builtInTelephotoCamera && $0.isTorchAvailable
-        }) ?? discovery.devices.first(where: {
             $0.deviceType == .builtInWideAngleCamera && $0.isTorchAvailable
+        }) ?? discovery.devices.first(where: {
+            $0.deviceType == .builtInTelephotoCamera && $0.isTorchAvailable
         }) ?? discovery.devices.first
     }
 
@@ -137,10 +146,9 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         do {
             try camera.lockForConfiguration()
             defer { camera.unlockForConfiguration() }
-            // A near-maximum torch level gives dimmer fingertips enough optical
-            // contrast without forcing every device to its absolute maximum.
-            let torchLevel = min(AVCaptureDevice.maxAvailableTorchLevel, 0.95)
-            try camera.setTorchModeOn(level: torchLevel)
+            // Maximum illumination improves transmission through darker or
+            // thicker fingertips; AVFoundation applies the device-safe limit.
+            try camera.setTorchModeOn(level: AVCaptureDevice.maxAvailableTorchLevel)
             if camera.isExposureModeSupported(.continuousAutoExposure) {
                 camera.exposureMode = .continuousAutoExposure
             }
@@ -156,6 +164,10 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
                 camera.activeVideoMaxFrameDuration = duration
             }
             exposureLockedForFinger = false
+            let name = camera.deviceType == .builtInWideAngleCamera
+                ? "main 1× rear camera"
+                : camera.localizedName
+            DispatchQueue.main.async { self.activeCameraName = name }
             return true
         } catch {
             publishError("The camera flashlight could not be enabled for pulse reading.")
@@ -189,6 +201,9 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         fingerFrames = 0
         missingFingerFrames = 0
         frameCount = 0
+        contactConfidence = 0
+        opticalFingerPresent = false
+        DispatchQueue.main.async { self.fingerDetected = false }
     }
 
     private func resetPulseFilterState() {
@@ -228,6 +243,7 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         let xStart = width / 4, xEnd = width * 3 / 4
         let yStart = height / 4, yEnd = height * 3 / 4
         var lumaSum = 0.0
+        var cbSum = 0.0
         var crSum = 0.0
         var count = 0
         var y = yStart
@@ -239,6 +255,7 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
                     let chromaY = min(chromaHeight - 1, y / 2)
                     let chromaX = min(chromaWidth - 1, x / 2)
                     // Full-range bi-planar output stores chroma as Cb, Cr.
+                    cbSum += Double(chroma[chromaY * chromaStride + chromaX * 2])
                     crSum += Double(chroma[chromaY * chromaStride + chromaX * 2 + 1])
                 }
                 count += 1
@@ -248,10 +265,25 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         }
         guard count > 0 else { return }
         let meanLuma = lumaSum / Double(count)
+        let meanCb = chroma == nil ? 128 : cbSum / Double(count)
         let meanCr = chroma == nil ? 128 : crSum / Double(count)
-        // Be permissive enough for darker skin tones, thicker fingertips, and
-        // camera modules where the flash sits farther from the active lens.
-        let coveredFinger = meanLuma > 20 && (meanCr > 128 || meanLuma > 90)
+        let redChroma = meanCr - meanCb
+
+        // A torch-lit fingertip is red/orange even when its luma is very low.
+        // Use red chroma dominance rather than rejecting every frame below an
+        // arbitrary brightness of 20, which excluded darker and thicker fingers.
+        let opticalCandidate = meanLuma > 5 && meanCr > 126 && redChroma > 2
+        if opticalCandidate {
+            contactConfidence = min(Self.contactMaximumScore, contactConfidence + 2)
+        } else {
+            contactConfidence = max(0, contactConfidence - 1)
+        }
+        if opticalFingerPresent {
+            if contactConfidence == 0 { opticalFingerPresent = false }
+        } else if contactConfidence >= Self.contactAcquireScore {
+            opticalFingerPresent = true
+        }
+        let coveredFinger = opticalFingerPresent
         frameCount += 1
         if frameCount % 5 == 0 {
             DispatchQueue.main.async { self.fingerDetected = coveredFinger }
@@ -285,8 +317,10 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
             if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
             exposureLockedForFinger = true
             // Exposure transitions alter the DC level, so start a fresh filter
-            // warm-up using the stable, locked image.
-            resetDetectorState()
+            // warm-up using the stable, locked image without forgetting that a
+            // finger is still present.
+            resetPulseFilterState()
+            fingerFrames = 0
         } catch { }
     }
 
