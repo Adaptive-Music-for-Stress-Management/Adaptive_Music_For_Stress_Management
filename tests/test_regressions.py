@@ -1,5 +1,6 @@
 """Focused regression checks for adaptive-music backend decisions."""
 
+import json
 import math
 import os
 import tempfile
@@ -29,12 +30,30 @@ def spotify_track(name="Quiet Song", artist="Calm Artist"):
 
 class SignalAndSongTests(unittest.TestCase):
     def test_song_bpm_is_inverse_user_bpm_with_requested_limits(self):
-        self.assertEqual(server._song_bucket_for_bpm(35), 90)
-        self.assertEqual(server._song_bucket_for_bpm(49), 80)
-        self.assertEqual(server._song_bucket_for_bpm(50), 70)
-        self.assertEqual(server._song_bucket_for_bpm(60), 60)
-        self.assertEqual(server._song_bucket_for_bpm(140), 60)
+        self.assertEqual(server._song_bucket_for_bpm(35), 150)
+        self.assertEqual(server._song_bucket_for_bpm(60), 150)
+        self.assertEqual(server._song_bucket_for_bpm(70), 140)
+        self.assertEqual(server._song_bucket_for_bpm(100), 110)
+        self.assertEqual(server._song_bucket_for_bpm(140), 70)
+        self.assertEqual(server._song_bucket_for_bpm(150), 60)
+        self.assertEqual(server._song_bucket_for_bpm(200), 60)
         self.assertEqual(server._song_bucket_for_bpm(None), 60)
+
+    def test_suno_response_uses_song_title_but_keeps_the_audio_filename(self):
+        with tempfile.TemporaryDirectory(prefix="adaptune-suno-test-") as library:
+            folder = os.path.join(library, "150")
+            os.makedirs(folder)
+            filename = "Moonlit Key Drift.mp3"
+            with open(os.path.join(folder, filename), "wb") as handle:
+                handle.write(b"test")
+            with patch.object(server, "MUSIC_DIR", library), \
+                 patch.object(server.random, "choice", return_value=filename):
+                server.PLAYED.clear()
+                response = server.api_suno_next(bucket=150)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["name"], "Moonlit Key Drift")
+        self.assertEqual(payload["file"], filename)
+        self.assertIn("Moonlit%20Key%20Drift.mp3", payload["url"])
 
     def test_ppg_reset_discards_a_peak_from_the_prior_session(self):
         detector = server.PPGDetector()

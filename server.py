@@ -19,7 +19,7 @@ Baseline
     EEG is displayed and classified immediately; only BPM and HRV are baselined.
 
 Music
-    SUNO AI library:   BPM_folder/<60..120>/song_*.mp3 — bucket = clamp(120 - (bpm//10)*10, 60, 120),
+    SUNO AI library:   BPM_folder/<60..150>/<song title>.mp3 — bucket = clamp(210 - (bpm//10)*10, 60, 150),
                        random song per bucket, no repeats within a cycle (cycle = all songs in the folder).
     Spotify + Claude:  the user's Anthropic key drives vibe / artist / playlist / song personalization,
                        karaoke (instrumental + LRCLIB synced lyrics). Spotify Premium required (Web
@@ -661,11 +661,11 @@ PLAYED = {}                    # bucket -> set(filenames served this cycle)
 PLAYED_LOCK = threading.Lock()
 
 def _song_bucket_for_bpm(bpm):
-    """Inverse therapeutic tempo: clamp(120 - floor-to-ten(user BPM), 60, 120)."""
+    """Inverse therapeutic tempo: clamp(210 - floor-to-ten(user BPM), 60, 150)."""
     if bpm is None or not math.isfinite(float(bpm)) or float(bpm) <= 0:
         return 60
-    bucket = 120 - (int(float(bpm) // 10) * 10)
-    return max(60, min(120, bucket))
+    bucket = 210 - (int(float(bpm) // 10) * 10)
+    return max(60, min(150, bucket))
 
 def _tracks_in(bucket):
     folder = os.path.join(MUSIC_DIR, str(bucket))
@@ -682,7 +682,7 @@ def api_suno_next(bucket: int = None, current: str = ""):
     if bucket is None:
         with HUB.lock:
             bucket = _song_bucket_for_bpm(HUB.bpm)
-    bucket = max(60, min(120, int(bucket // 10) * 10))
+    bucket = max(60, min(150, int(bucket // 10) * 10))
     files = _tracks_in(bucket)
     if not files:
         return JSONResponse({"url": None, "name": None, "bucket": bucket, "error": "no tracks"})
@@ -696,7 +696,7 @@ def api_suno_next(bucket: int = None, current: str = ""):
         played.add(name)
         PLAYED[bucket] = played
     url = f"/music/{bucket}/{urllib.parse.quote(name)}"
-    return JSONResponse({"url": url, "name": name, "bucket": bucket,
+    return JSONResponse({"url": url, "name": os.path.splitext(name)[0], "file": name, "bucket": bucket,
                          "remaining": len(files) - len(PLAYED[bucket])})
 
 

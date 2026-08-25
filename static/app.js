@@ -323,6 +323,7 @@ const sunoEls = [$("audioA"), $("audioB")];
 let sunoIdx = 0, sunoPlaying = false, sunoFetching = false;
 let sunoBucket = null;                 // bucket of the audible song
 let sunoTarget = null;
+let sunoCurrentFile = null;
 const SUNO_VOL = 0.9, FADE_MS = 1100;
 sunoEls.forEach(el => { el.volume = 0; });
 
@@ -366,7 +367,7 @@ async function sunoLoad(bucket, autoplay) {
     const cur = sunoEls[sunoIdx];
     const q = "bucket=" + (bucket != null ? bucket : sunoTargetBucket());
     const j = await (await fetch("/api/suno/next?" + q +
-              "&current=" + encodeURIComponent($("sunoName").textContent || ""))).json();
+              "&current=" + encodeURIComponent(sunoCurrentFile || ""))).json();
     if (!j || !j.url) { sunoFetching = false; return; }
     if (requestId !== sunoLoadRequestId || audioSource !== "suno") return;
     // fade OUT the old song fully, then fade IN the new one (spec: fade out - fade in)
@@ -379,6 +380,7 @@ async function sunoLoad(bucket, autoplay) {
     const nxt = sunoEls[sunoIdx];
     nxt.src = j.url; nxt.volume = 0;
     $("sunoName").textContent = j.name;
+    sunoCurrentFile = j.file || j.name;
     $("sunoBucket").textContent = j.bucket + " BPM folder";
     sunoBucket = j.bucket;
     if (autoplay || sunoPlaying) {
@@ -389,11 +391,11 @@ async function sunoLoad(bucket, autoplay) {
   } finally { sunoFetching = false; }
 }
 
-// Inverse tempo rule: 120 - floor-to-ten(user BPM), clamped to 60...120.
+// Inverse tempo rule: 210 - floor-to-ten(user BPM), clamped to 60...150.
 // A temporary missing reading keeps the last target instead of interrupting music.
 function updateSunoTarget(bucket) {
   if (bucket == null) return false;
-  const next = clamp(Math.floor(Number(bucket) / 10) * 10, 60, 120);
+  const next = clamp(Math.floor(Number(bucket) / 10) * 10, 60, 150);
   if (next === sunoTarget) return false;
   sunoTarget = next;
   return true;

@@ -24,7 +24,7 @@ This branch carries both: the computer app at the repo root and the Xcode projec
                      Calm 0–33 · Mild-stress 33–66 · Stressed 66–100
                                            │
                                            ▼
-        ┌── SUNO AI songs (inverse user BPM → BPM_folder/60…120, no-repeat cycles)
+        ┌── SUNO AI songs (inverse user BPM → BPM_folder/60…150, no-repeat cycles)
         ├── Spotify + Claude personalization (Vibe · Artist · Playlist · Song)
         └── Relief: Karaoke (instrumental + synced lyrics) · Breathe · Play-along
 ```
@@ -50,7 +50,7 @@ This branch carries both: the computer app at the repo root and the Xcode projec
   value, colored green / yellow / red, over a horizontal meter with all three labels.
   The empty card below the meter is where the Relief UI renders.
 - **Personalize** — the SUNO AI player (song name, adjustable timeline, « ▶ »): the
-  current song always comes from the `120 - ((BPM // 10) * 10)` folder (clamped 60–120), fading
+  current song always comes from the `210 - ((BPM // 10) * 10)` folder (clamped 60–150), fading
   out and in when the bucket changes, never repeating a song within a cycle. Below it,
   enter your **Anthropic API key** → **Connect Spotify** (Premium required) → pick
   **Vibe / Artist / Playlist / Song**; Claude names real songs, Spotify Search resolves
