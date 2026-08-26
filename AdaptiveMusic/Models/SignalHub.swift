@@ -152,6 +152,21 @@ final class SignalHub: ObservableObject {
         registerBeat(rrMs: 60000.0 / value, skipZeroDiff: true)
     }
 
+    /// A camera periodicity estimate used when an individual optical peak is
+    /// temporarily too weak to time. It deliberately updates BPM without
+    /// inventing an RR interval, beat animation, or HRV datapoint.
+    func registerCameraBPMEstimate(_ value: Double) {
+        guard (30...200).contains(value) else { return }
+        DispatchQueue.main.async { [self] in
+            bpm = bpm == nil ? value : 0.35 * value + 0.65 * bpm!
+            lastBeatDate = Date()
+            bpmHistory.append(bpm!)
+            if bpmHistory.count > SignalHub.maxPoints { bpmHistory.removeFirst() }
+            feedBaseline(now: lastBeatDate)
+            updateScore()
+        }
+    }
+
     private func feedBaseline(now: Date) {
         guard baseline == nil, stressedAtStart == false, let bpm else { return }
         if baseT0 == nil { baseT0 = now }

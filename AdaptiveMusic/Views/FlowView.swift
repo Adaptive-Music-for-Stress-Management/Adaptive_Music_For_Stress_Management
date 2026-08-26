@@ -79,14 +79,16 @@ struct FlowView: View {
                     .foregroundStyle(StressLabel.stressed.color)
                     .multilineTextAlignment(.center)
             } else if camera.running, camera.fingerDetected, hub.bpm == nil {
-                Text("Finger detected — hold still while the camera learns your pulse.")
+                Text(camera.signalQuality > 0
+                     ? "Pulse signal \(Int((camera.signalQuality * 100).rounded()))%\(camera.activeOpticalChannel.isEmpty ? "" : " · \(camera.activeOpticalChannel) channel") — hold still."
+                     : "Finger detected — filtering the first few seconds of pulse data.")
                     .font(.footnote)
                     .foregroundStyle(Theme.accent)
                     .multilineTextAlignment(.center)
             }
             flowButton(camera.running ? (hub.bpm != nil ? "Pulse detected — continue" : "Reading…")
                                       : "Start mobile reader",
-                       subtitle: camera.running ? (camera.fingerDetected ? "signal OK" : "cover the lens fully")
+                       subtitle: camera.running ? (camera.fingerDetected ? "analyzing color changes" : "cover the lens fully")
                                                 : "turns on the flashlight and camera") {
                 if camera.running, hub.bpm != nil { step = .stressed }
                 else { camera.start() }

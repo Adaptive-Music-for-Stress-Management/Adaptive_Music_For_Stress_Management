@@ -6,8 +6,8 @@ import Combine
 ///
 /// A covered lens transmits mostly red light. The capture path samples the
 /// centre of the frame, lets auto-exposure settle under the fingertip, then
-/// locks exposure while a filtered, polarity-independent peak detector turns
-/// the small periodic optical changes into RR intervals.
+/// locks exposure while a multi-channel filtered detector estimates BPM and
+/// turns quality-checked optical peaks into RR intervals.
 final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     @Published var running = false
@@ -15,6 +15,8 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
     @Published var fingerDetected = false
     @Published var errorMessage: String? = nil
     @Published private(set) var activeCameraName = ""
+    @Published private(set) var signalQuality = 0.0
+    @Published private(set) var activeOpticalChannel = ""
 
     private let hub: SignalHub
     private let session = AVCaptureSession()
@@ -22,24 +24,17 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
     private var device: AVCaptureDevice?
     private var configured = false
 
-    // Optical filter and peak-detector state. All access happens on `queue`.
-    private var dc: Double?
-    private var filtered = 0.0
-    private var priorFiltered = 0.0
-    private var previousFiltered = 0.0
-    private var envelope = 0.0
-    private var positiveExtreme = 0.0
-    private var negativeExtreme = 0.0
-    private var polarity = 0.0
-    private var lastSampleTime: CFTimeInterval?
-    private var lastPeakTime: CFTimeInterval = 0
+    // Optical processing state. All access happens on `queue`.
+    private var processor = PPGSignalProcessor()
+    private var lastTimedBeat: CFTimeInterval = 0
     private var fingerFrames = 0
-    private var usableFrames = 0
     private var missingFingerFrames = 0
     private var exposureLockedForFinger = false
     private var frameCount = 0
     private var contactConfidence = 0
     private var opticalFingerPresent = false
+    private var captureFormatConfigured = false
+    private var captureFPS = 30.0
 
     // Contact acquisition is intentionally faster than contact release. Two
     // convincingly red frames acquire a finger, while brief dim frames caused
@@ -146,6 +141,7 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         do {
             try camera.lockForConfiguration()
             defer { camera.unlockForConfiguration() }
+            configureCaptureFormat(on: camera)
             // Maximum illumination improves transmission through darker or
             // thicker fingertips; AVFoundation applies the device-safe limit.
             try camera.setTorchModeOn(level: AVCaptureDevice.maxAvailableTorchLevel)
@@ -155,24 +151,62 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
             if camera.isFocusModeSupported(.continuousAutoFocus) {
                 camera.focusMode = .continuousAutoFocus
             }
-            let targetFrameRate = 30.0
             if camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
-                $0.minFrameRate <= targetFrameRate && $0.maxFrameRate >= targetFrameRate
+                $0.minFrameRate <= captureFPS && $0.maxFrameRate >= captureFPS
             }) {
-                let duration = CMTime(value: 1, timescale: 30)
+                let duration = CMTime(value: 1, timescale: CMTimeScale(captureFPS.rounded()))
                 camera.activeVideoMinFrameDuration = duration
                 camera.activeVideoMaxFrameDuration = duration
             }
             exposureLockedForFinger = false
-            let name = camera.deviceType == .builtInWideAngleCamera
+            let cameraName = camera.deviceType == .builtInWideAngleCamera
                 ? "main 1× rear camera"
                 : camera.localizedName
+            let name = "\(cameraName) · \(Int(captureFPS.rounded())) fps"
             DispatchQueue.main.async { self.activeCameraName = name }
             return true
         } catch {
             publishError("The camera flashlight could not be enabled for pulse reading.")
             return false
         }
+    }
+
+    /// Use the lowest-resolution physical format that can sustain 60 fps. That
+    /// doubles RR timing resolution compared with the old 30 fps path without
+    /// wasting CPU on pixels that will only be spatially averaged. Older
+    /// devices fall back to the same strategy at 30 fps.
+    private func configureCaptureFormat(on camera: AVCaptureDevice) {
+        guard !captureFormatConfigured else { return }
+        struct FormatChoice {
+            let format: AVCaptureDevice.Format
+            let fps: Double
+            let area: Int64
+        }
+
+        var choice: FormatChoice?
+        for desiredFPS in [60.0, 30.0] where choice == nil {
+            let candidates = camera.formats.compactMap { format -> FormatChoice? in
+                let supportsRate = format.videoSupportedFrameRateRanges.contains {
+                    $0.minFrameRate <= desiredFPS && $0.maxFrameRate >= desiredFPS
+                }
+                guard supportsRate else { return nil }
+                let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                guard dimensions.width >= 320, dimensions.height >= 240 else { return nil }
+                return FormatChoice(
+                    format: format,
+                    fps: desiredFPS,
+                    area: Int64(dimensions.width) * Int64(dimensions.height)
+                )
+            }
+            choice = candidates.min(by: { $0.area < $1.area })
+        }
+        if let choice {
+            camera.activeFormat = choice.format
+            captureFPS = choice.fps
+        } else if let range = camera.activeFormat.videoSupportedFrameRateRanges.first {
+            captureFPS = min(30, range.maxFrameRate)
+        }
+        captureFormatConfigured = true
     }
 
     func stop() {
@@ -203,21 +237,16 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         frameCount = 0
         contactConfidence = 0
         opticalFingerPresent = false
-        DispatchQueue.main.async { self.fingerDetected = false }
+        DispatchQueue.main.async {
+            self.fingerDetected = false
+            self.signalQuality = 0
+            self.activeOpticalChannel = ""
+        }
     }
 
     private func resetPulseFilterState() {
-        dc = nil
-        filtered = 0
-        priorFiltered = 0
-        previousFiltered = 0
-        envelope = 0
-        positiveExtreme = 0
-        negativeExtreme = 0
-        polarity = 0
-        lastSampleTime = nil
-        lastPeakTime = 0
-        usableFrames = 0
+        processor.reset()
+        lastTimedBeat = 0
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
@@ -245,19 +274,35 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         var lumaSum = 0.0
         var cbSum = 0.0
         var crSum = 0.0
+        var redSum = 0.0
+        var greenSum = 0.0
+        var blueSum = 0.0
         var count = 0
         var y = yStart
         while y < yEnd {
             var x = xStart
             while x < xEnd {
-                lumaSum += Double(luma[y * lumaStride + x])
+                let luminance = Double(luma[y * lumaStride + x])
+                lumaSum += luminance
+                var cb = 128.0
+                var cr = 128.0
                 if let chroma, chromaWidth > 0, chromaHeight > 0 {
                     let chromaY = min(chromaHeight - 1, y / 2)
                     let chromaX = min(chromaWidth - 1, x / 2)
                     // Full-range bi-planar output stores chroma as Cb, Cr.
-                    cbSum += Double(chroma[chromaY * chromaStride + chromaX * 2])
-                    crSum += Double(chroma[chromaY * chromaStride + chromaX * 2 + 1])
+                    cb = Double(chroma[chromaY * chromaStride + chromaX * 2])
+                    cr = Double(chroma[chromaY * chromaStride + chromaX * 2 + 1])
+                    cbSum += cb
+                    crSum += cr
                 }
+                // Full-range BT.601 YCbCr conversion. Spatial averaging before
+                // temporal processing suppresses sensor noise at very low cost.
+                let red = luminance + 1.402 * (cr - 128)
+                let green = luminance - 0.344136 * (cb - 128) - 0.714136 * (cr - 128)
+                let blue = luminance + 1.772 * (cb - 128)
+                redSum += max(0, min(255, red))
+                greenSum += max(0, min(255, green))
+                blueSum += max(0, min(255, blue))
                 count += 1
                 x += 4
             }
@@ -268,11 +313,17 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
         let meanCb = chroma == nil ? 128 : cbSum / Double(count)
         let meanCr = chroma == nil ? 128 : crSum / Double(count)
         let redChroma = meanCr - meanCb
+        let meanRed = redSum / Double(count)
+        let meanGreen = greenSum / Double(count)
+        let meanBlue = blueSum / Double(count)
 
         // A torch-lit fingertip is red/orange even when its luma is very low.
-        // Use red chroma dominance rather than rejecting every frame below an
-        // arbitrary brightness of 20, which excluded darker and thicker fingers.
-        let opticalCandidate = meanLuma > 5 && meanCr > 126 && redChroma > 2
+        // Accept either YCbCr redness or RGB red dominance so camera-specific
+        // color conversion and darker/thicker fingertips do not block contact.
+        let chromaContact = meanCr > 124 && redChroma > 0.5
+        let rgbContact = meanRed > 8 &&
+            meanRed > meanGreen * 1.035 && meanRed > meanBlue * 1.035
+        let opticalCandidate = meanLuma > 3 && (chromaContact || rgbContact)
         if opticalCandidate {
             contactConfidence = min(Self.contactMaximumScore, contactConfidence + 2)
         } else {
@@ -299,10 +350,25 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
 
         missingFingerFrames = 0
         fingerFrames += 1
-        if fingerFrames == 36 { lockExposureForFingerIfPossible() }
+        let exposureSettleFrames = max(30, Int(captureFPS.rounded()))
+        if fingerFrames == exposureSettleFrames { lockExposureForFingerIfPossible() }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let timestamp = pts.isValid ? CMTimeGetSeconds(pts) : CACurrentMediaTime()
-        detect(meanLuma, at: timestamp)
+        let result = processor.append(red: meanRed, green: meanGreen, blue: meanBlue,
+                                      at: timestamp)
+        if let rr = result.rrMs {
+            lastTimedBeat = timestamp
+            hub.registerBeat(rrMs: rr)
+        }
+        if let bpm = result.bpm, timestamp - lastTimedBeat > 2.2 {
+            hub.registerCameraBPMEstimate(bpm)
+        }
+        if frameCount % 10 == 0 {
+            DispatchQueue.main.async {
+                self.signalQuality = result.quality
+                self.activeOpticalChannel = result.channelName ?? ""
+            }
+        }
     }
 
     /// Lock after roughly one second with a finger covering the lens. Continuous
@@ -337,58 +403,6 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
             }
             exposureLockedForFinger = false
         } catch { }
-    }
-
-    private func detect(_ sample: Double, at time: CFTimeInterval) {
-        guard let previousTime = lastSampleTime else {
-            dc = sample
-            lastSampleTime = time
-            return
-        }
-        let dt = max(1.0 / 120.0, min(0.2, time - previousTime))
-        lastSampleTime = time
-        guard var dc else { return }
-
-        // A slow DC tracker removes illumination drift without tracking the
-        // 0.5–3.3 Hz pulse. In transmission PPG, a heartbeat normally reduces
-        // brightness; polarity calibration below also handles the inverse.
-        let dcAlpha = min(0.05, dt / 2.5)
-        dc += (sample - dc) * dcAlpha
-        self.dc = dc
-        let highPass = dc - sample
-        let smoothing = min(0.45, dt / 0.10)
-        filtered += (highPass - filtered) * smoothing
-        positiveExtreme = max(positiveExtreme, filtered)
-        negativeExtreme = min(negativeExtreme, filtered)
-        usableFrames += 1
-
-        // Pick one waveform orientation after the short warm-up. Either phase
-        // produces the same RR interval; selecting only one avoids counting both
-        // a crest and trough from a single heartbeat.
-        if polarity == 0, usableFrames >= 45 {
-            polarity = positiveExtreme >= -negativeExtreme ? 1 : -1
-            envelope = 0
-        }
-        let oriented = polarity == 0 ? 0 : polarity * filtered
-        envelope = max(abs(oriented), envelope * exp(-dt / 2.5))
-        let threshold = envelope * 0.28
-
-        // A local maximum with a 300 ms refractory period yields one candidate
-        // per beat (30–200 BPM). Sample-buffer timestamps keep RR stable even if
-        // the capture queue has an occasional scheduling delay.
-        if polarity != 0,
-           previousFiltered > priorFiltered,
-           previousFiltered >= oriented,
-           previousFiltered > threshold,
-           time - lastPeakTime >= 0.30 {
-            if lastPeakTime > 0 {
-                let rr = (time - lastPeakTime) * 1000.0
-                if (300...2000).contains(rr) { hub.registerBeat(rrMs: rr) }
-            }
-            lastPeakTime = time
-        }
-        priorFiltered = previousFiltered
-        previousFiltered = oriented
     }
 
     private func publishRunning(_ value: Bool) {
