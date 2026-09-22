@@ -1,0 +1,259 @@
+THIRD-PARTY NOTICES
+===================
+
+This file lists third-party model checkpoints and libraries distributed with, or
+used by, Adaptune. It is intended to preserve copyright, license, and citation
+notices for redistributed components.
+
+
+Component: Signal-JEPA pretrained checkpoint
+Identifier: braindecode/signal-jepa_without-chans
+Source: https://huggingface.co/braindecode/signal-jepa_without-chans
+Revision recorded from Hugging Face main on 2026-09-21:
+213876ea30f0764fd25c055efcb55d1d1652a371
+Distributed file reference:
+models/signal-jepa_without-chans/model.safetensors, as used during training
+Recorded SHA256 of pretrained model.safetensors:
+be59962a22c936917c7e522a920c7f8b1721e5bc369da8243439b9128425071f
+License: MIT
+
+Copyright notice:
+No separate copyright notice was supplied in the Hugging Face model card beyond
+the MIT license declaration. Preserve the MIT permission notice below with any
+redistribution of the checkpoint.
+
+License text:
+MIT License
+
+[The upstream Hugging Face model card declares the MIT license but does not
+provide a separate copyright line.]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Related research:
+Guetschel, P., Moreau, T., & Tangermann, M. (2024).
+S-JEPA: towards seamless cross-dataset transfer through dynamic spatial
+attention. arXiv.
+https://doi.org/10.48550/arXiv.2403.11772
+
+
+Component: Adaptune Signal-JEPA UNIVERSE stress classifier checkpoint
+Identifier: models/universe-signal-jepa-stress-detector
+Source: This repository
+Base checkpoint: braindecode/signal-jepa_without-chans
+Architecture: Braindecode SignalJEPA_PreLocal
+Training data source: UNIVERSE dataset, Wild-session recordings
+Dataset source: https://zenodo.org/records/10371068
+License metadata in bundled model card: BSD-3-Clause
+
+Copyright notice:
+Copyright (c) Adaptune contributors. The exported checkpoint incorporates the
+Signal-JEPA pretrained checkpoint listed above; preserve the upstream MIT notice
+for that base checkpoint and the BSD-3-Clause terms below for the bundled
+Braindecode model-code metadata.
+
+License text:
+BSD 3-Clause License
+
+Copyright (c) Adaptune contributors.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+Component: Braindecode
+Version: 1.7.0
+Source: https://github.com/braindecode/braindecode
+Use in Adaptune: Signal-JEPA architecture and model loading/inference
+License: BSD-3-Clause
+
+Copyright notice:
+Copyright (c) 2017-currently Braindecode Developers
+All rights reserved.
+
+License text:
+BSD 3-Clause License
+
+Copyright (c) 2017-currently Braindecode Developers
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+Component: Muse LSL
+Package: muselsl
+Version: >=2.5,<3 as declared in requirements.txt
+Source: https://github.com/alexandrebarachant/muse-lsl
+Use in Adaptune: Muse 2 EEG stream discovery and acquisition
+License: BSD-3-Clause
+
+Copyright notice:
+Copyright notices are preserved from the upstream Muse LSL project and its
+contributors: Alexandre Barachant, Dano Morrison, Hubert Banville, Jason
+Kowaleski, Uri Shaked, Sylvain Chevallier, and Juan Jesus Torre Tresols.
+
+License text:
+BSD 3-Clause License
+
+Copyright (c) Muse LSL contributors.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Related citation:
+Alexandre Barachant, Dano Morrison, Hubert Banville, Jason Kowaleski, Uri
+Shaked, Sylvain Chevallier, & Juan Jesus Torre Tresols. (2019). muse-lsl.
+Zenodo. https://doi.org/10.5281/zenodo.3228861
+
+
+Component: pylsl
+Version: >=1.18,<2 as declared in requirements.txt
+Source: https://github.com/labstreaminglayer/pylsl
+Use in Adaptune: Lab Streaming Layer client used for live Muse streams
+License: MIT
+
+Copyright notice:
+Copyright notices are preserved from the upstream pylsl project and its
+contributors.
+
+License text:
+MIT License
+
+Copyright (c) pylsl contributors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Component: Anthropic Python SDK
+Package: anthropic
+Version: As resolved from requirements.txt
+Source: https://github.com/anthropics/anthropic-sdk-python
+Use in Adaptune: Claude API integration for AI song/analysis features
+License: MIT
+
+Copyright notice:
+Copyright (c) Anthropic, PBC
+
+License text:
+MIT License
+
+Copyright (c) Anthropic, PBC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
