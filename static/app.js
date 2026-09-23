@@ -67,6 +67,7 @@ async function answerStressed(stressed) {
   sessionGraphImages = {};
   sessionStartedAt = Date.now();
   lastRecordedStressSecond = -1;
+  liveSessionActive = true;
   const flow = $("flow");
   flow.classList.add("fade-out");
   setTimeout(() => { flow.hidden = true; }, 450);
@@ -83,17 +84,38 @@ let sessionStartedAt = Date.now();
 let sessionStressPoints = [];
 let sessionGraphImages = {};
 let lastRecordedStressSecond = -1;
+let liveSessionActive = false;
+let ws = null;
+let wsReconnectTimer = null;
 function connectWS() {
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
-  ws.onmessage = ev => {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  const socket = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws = socket;
+  socket.onmessage = ev => {
     S = JSON.parse(ev.data);
     const beat = S.beat_seq !== lastBeatSeq;
     if (beat) lastBeatSeq = S.beat_seq;
     onSnapshot(S, beat);
   };
-  ws.onclose = () => setTimeout(connectWS, 1000);
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    ws = null;
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = setTimeout(connectWS, 1000);
+  };
 }
 connectWS();
+
+// Returning to a background tab must not be treated as ending a live session.
+// Supabase may refresh its auth token at this point, so keep the server cookie
+// warm and restore the sensor stream if the browser suspended the socket.
+async function resumeLiveSession() {
+  if (document.hidden) return;
+  try { await fetch("/api/session/keepalive", {cache: "no-store"}); } catch (_) {}
+  connectWS();
+}
+document.addEventListener("visibilitychange", resumeLiveSession);
+window.addEventListener("pageshow", resumeLiveSession);
 
 function onSnapshot(s, beat) {
   updateGraphs(s, beat);
@@ -228,6 +250,8 @@ function updateGraphs(s, beat) {
 }
 
 window.AdaptuneSession = {
+  isActive() { return liveSessionActive; },
+  end() { liveSessionActive = false; },
   snapshot() {
     const values = sessionStressPoints.map(point => point.y).filter(Number.isFinite);
     return {
@@ -484,8 +508,13 @@ let spLastPos = 0, spDuration = 0, spDragging = false;
 let stressLabelSeen = null, stressAdaptInFlight = false;
 let spPlaylistId = null, playlistCatalog = null, playlistLoading = null;
 
-async function spToken() {
-  try { return (await (await fetch("/api/spotify/token")).json()).access_token; } catch(e){ return null; }
+async function spToken(force = false) {
+  try {
+    const response = await fetch("/api/spotify/token" + (force ? "?force=1" : ""), {cache: "no-store"});
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return typeof payload.access_token === "string" ? payload.access_token : null;
+  } catch(e){ return null; }
 }
 async function refreshSpotify() {
   const revision = spotifyConnectionGeneration;
@@ -530,12 +559,21 @@ async function maybeInitSpotify() {
   });
   spPlayer.addListener("ready", ({device_id}) => { spDeviceId = device_id; });
   spPlayer.addListener("not_ready", () => { spDeviceId = null; });
+  spPlayer.addListener("initialization_error", ({message}) => {
+    spDeviceId = null;
+    console.warn("[spotify] initialization failed", message);
+  });
+  spPlayer.addListener("authentication_error", ({message}) => {
+    spDeviceId = null;
+    console.warn("[spotify] authentication failed", message);
+  });
   spPlayer.addListener("player_state_changed", st => { spIsPlaying = !!(st && !st.paused); });
   spPlayer.addListener("account_error", () => {
     $("spMsg").textContent = "I apologize, but you need Spotify premium to access this feature.";
     $("spMsg").className = "setup-msg mono err";
   });
-  spPlayer.connect();
+  const connected = await spPlayer.connect();
+  if (!connected) spDeviceId = null;
 }
 
 /* tabs */
@@ -720,22 +758,38 @@ async function spRequestTrack(direction) {
     document.querySelectorAll("#prefConfirm, #spPrevBtn, #spNextBtn").forEach(el => el.disabled = false);
   }
 }
+
+async function waitForSpotifyDevice(requestId) {
+  await maybeInitSpotify();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return null;
+    if (spDeviceId) return spDeviceId;
+    // The Web Playback SDK can take several seconds after OAuth completes to
+    // register its device. Reconnect once before giving up instead of making
+    // the first playback request race the SDK's ready event.
+    if (attempt === 4 && spPlayer) {
+      try { await spPlayer.connect(); } catch (_) {}
+    }
+    await new Promise(resolve => setTimeout(resolve, 450));
+  }
+  return spDeviceId;
+}
+
 async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
   const requestId = ++spotifyPlayRequestId;
   if (!await claimAudio("spotify") || requestId !== spotifyPlayRequestId || audioSource !== "spotify") {
     return false;
   }
-  await maybeInitSpotify();
+  const deviceId = await waitForSpotifyDevice(requestId);
   if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
-  if (!spDeviceId) await new Promise(r => setTimeout(r, 800));
-  if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
-  if (!spDeviceId) {
+  if (!deviceId) {
     $("prefMsg").textContent = "Spotify player not ready yet — try again in a moment.";
     $("prefMsg").className = "setup-msg mono err";
     return false;
   }
-  const tok = await spToken();
+  const previousTrack = spTrack;
   try {
+    if (spPlayer?.activateElement) await spPlayer.activateElement().catch(()=>{});
     if (spTrack && spPlayer) await spFade(0, 500);                    // fade out old
     if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
     const safePosition = Math.max(0, Math.min(Math.round(positionMs || 0), Math.max(0, (track.duration_ms || 0) - 250)));
@@ -744,11 +798,26 @@ async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
     $("spOpen").href = track.external_url || "https://open.spotify.com/track/" + encodeURIComponent(track.id);
     $("spTrackName").textContent = track.name + " — " + (track.artist || "");
     $("spPlayerUI").hidden = false;
-    const response = await fetch("https://api.spotify.com/v1/me/player/play?device_id=" + spDeviceId, {
-      method: "PUT", headers: {Authorization: "Bearer " + tok, "Content-Type": "application/json"},
-      body: JSON.stringify({uris: [track.uri], position_ms: safePosition}),
-    });
-    if (!response.ok) throw new Error("Spotify playback request failed (" + response.status + ")");
+    let response = null;
+    let lastStatus = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tok = await spToken(response?.status === 401);
+      if (!tok) throw new Error("Spotify session expired");
+      response = await fetch("https://api.spotify.com/v1/me/player/play?device_id=" + encodeURIComponent(spDeviceId || deviceId), {
+        method: "PUT", headers: {Authorization: "Bearer " + tok, "Content-Type": "application/json"},
+        body: JSON.stringify({uris: [track.uri], position_ms: safePosition}),
+      });
+      lastStatus = response.status;
+      if (response.ok) break;
+      if (![401, 404, 429, 502, 503].includes(response.status) || attempt === 2) break;
+      if (response.status === 404 || response.status === 502 || response.status === 503) {
+        spDeviceId = null;
+        await maybeInitSpotify();
+        await waitForSpotifyDevice(requestId);
+      }
+      await new Promise(resolve => setTimeout(resolve, 450 * (attempt + 1)));
+    }
+    if (!response?.ok) throw new Error("Spotify playback request failed (" + lastStatus + ")");
     if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") {
       if (spPlayer) await spPlayer.pause().catch(()=>{});
       return false;
@@ -776,7 +845,13 @@ async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
     return true;
   } catch(e) {
     console.warn("[spotify] play failed", e);
-    $("prefMsg").textContent = "Spotify couldn't start that song — try again.";
+    if (previousTrack && spPlayer && audioSource === "spotify") await spFade(0.9, 500).catch(()=>{});
+    const detail = String(e.message || "");
+    $("prefMsg").textContent = detail.includes("403")
+      ? "Spotify playback needs an active Premium account."
+      : detail.includes("429")
+        ? "Spotify is rate-limiting playback — try again in a moment."
+        : "Spotify couldn't start that song — open Spotify once, then try again.";
     $("prefMsg").className = "setup-msg mono err";
     return false;
   }

@@ -819,12 +819,12 @@ def _sp_basic():
     return _b64.b64encode(f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()).decode()
 
 _sp_lock = threading.Lock()
-def _sp_token(s):
+def _sp_token(s, force=False):
     """Valid user access token for this session (refreshes when near expiry)."""
     with _sp_lock:
         if not s.get("access"):
             return None
-        if time.time() < s["exp"] - 30:
+        if not force and time.time() < s["exp"] - 30:
             return s["access"]
         if s.get("refresh"):
             try:
@@ -890,6 +890,17 @@ async def clear_browser_session(request: Request):
     _clear_session(s)
     return _with_cookie(JSONResponse({"ok": True}), sid)
 
+@app.get("/api/session/keepalive")
+def keepalive_browser_session(request: Request):
+    """Touch the browser session without changing the live session state.
+
+    Supabase can refresh its auth token when a background tab becomes visible
+    again.  The dashboard must remain live during that refresh, so the client
+    uses this endpoint only to renew the short-lived server cookie.
+    """
+    sid, _ = _session(request)
+    return _with_cookie(JSONResponse({"ok": True}), sid)
+
 @app.post("/api/spotify/disconnect")
 async def disconnect_spotify(request: Request):
     sid, s = _session(request)
@@ -934,7 +945,8 @@ def sp_status(request: Request):
 @app.get("/api/spotify/token")
 def sp_token_ep(request: Request):
     sid, s = _session(request)
-    return _with_cookie(JSONResponse({"access_token": _sp_token(s)}), sid)
+    force = request.query_params.get("force") == "1"
+    return _with_cookie(JSONResponse({"access_token": _sp_token(s, force=force)}), sid)
 
 
 @app.get("/api/playlists")

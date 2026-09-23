@@ -65,7 +65,12 @@ async function setPortalUser(user) {
   }
   document.getElementById("accountEmail").textContent = user.email || "";
   portalShow("landing", false);
-  portalShow("accountDash", true);
+  // Supabase emits TOKEN_REFRESHED when a background tab becomes visible.
+  // Keep the live dashboard in front during that event instead of resetting
+  // the user to the account dashboard and making it look like the session ended.
+  const liveViewOpen = window.AdaptuneSession?.isActive?.() ||
+    !document.getElementById("flow").hidden || !document.getElementById("dash").hidden;
+  portalShow("accountDash", !liveViewOpen);
   try {
     await supabaseClient.from("users").upsert({id: user.id, email: user.email || ""});
   } catch (_) {}
@@ -158,6 +163,7 @@ async function saveCurrentSession() {
     document.getElementById("dash").classList.remove("shown");
     portalShow("flow", false);
     portalShow("accountDash", true);
+    window.AdaptuneSession?.end?.();
     await loadSessions();
   } catch (error) {
     window.alert(`Session could not be saved: ${error.message || error}`);
