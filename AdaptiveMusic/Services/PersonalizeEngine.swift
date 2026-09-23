@@ -209,7 +209,7 @@ final class PersonalizeEngine: ObservableObject {
         if let track = state.3 { currentTrack = track }
         positionMs = state.0; durationMs = state.1; isPlaying = state.2
         if let label = hub.stressLabel, label != stressLabelSeen, !busy, !claude.busy,
-           Date().timeIntervalSince(lastAutomatic) >= 60 {
+           Date().timeIntervalSince(lastAutomatic) >= 10 {
             stressLabelSeen = label; lastAutomatic = Date()
             await request(direction: 0, adaptToStress: true)
         }
