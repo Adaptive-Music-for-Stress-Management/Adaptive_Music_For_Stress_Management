@@ -1,5 +1,6 @@
 # runtime artifacts
 BPM_folder/
+.music_library/
 __pycache__/
 *.pyc
 .DS_Store

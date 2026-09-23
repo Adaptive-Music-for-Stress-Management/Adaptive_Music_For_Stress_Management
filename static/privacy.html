@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adaptune · Data use</title>
+<style>body{max-width:760px;margin:48px auto;padding:24px;background:#0b0f14;color:#dce6f0;font:17px/1.7 system-ui}a{color:#27cea0}</style>
+<h1>Adaptune data use</h1>
+<p>Spotify sign-in lets Adaptune search music, show your playlists and control playback.
+Tokens, playlist selection and recent track identifiers stay in temporary server memory.
+Disconnect Spotify to stop playback and delete this retained data. To revoke access at Spotify too,
+visit <a href="https://www.spotify.com/account/apps/">your Spotify app permissions</a>.
+Closing a tab is not the same as disconnecting. Inactive server sessions expire within one hour.</p>
+<p>Your Anthropic API key is sent to this server over HTTPS in deployed installations
+(HTTP is permitted only on the local development loopback address). It is kept in memory
+for no more than 30 minutes, and cleared on removal, session end, sign-out or session expiry.
+It is not written to the application database or application logs.</p>
+<p>Song suggestions send only your independently typed preferences, current stress estimate
+and wellness goal to Anthropic. Spotify responses and listening history are not sent to Claude.
+Using AI incurs charges on the account associated with the supplied key.</p>
+<p>Session analysis is optional. After your permission, relative timestamps, stress scores and
+the calculated average are sent to Anthropic. Email, account IDs and absolute session dates
+are not included. Anthropic processes these requests under its
+<a href="https://www.anthropic.com/legal/commercial-terms">commercial terms</a> and
+<a href="https://platform.claude.com/docs/en/manage-claude/api-and-data-retention">retention rules</a>.</p>
+<p>AI-generated interpretations may be inaccurate. They provide general wellness information,
+not diagnosis or medical advice. Sensor estimates and generated suggestions should not be
+treated as clinical measurements or guaranteed outcomes.</p>
+<p>Saved session charts, stress datapoints and account email are stored in the configured
+Supabase project. Removing an API key or disconnecting Spotify does not delete saved
+Adaptune sessions. Karaoke uses an owner-supplied recording and transcript bundled locally. It sends no
+lyrics or song information to an AI or lyrics service and displays no synchronized lyrics.</p>
+<a href="/">Back to Adaptune</a></html>

@@ -22,7 +22,7 @@ Music
     SUNO AI library:   BPM_folder/<60..150>/<song title>.mp3 — bucket = clamp(210 - (bpm//10)*10, 60, 150),
                        random song per bucket, no repeats within a cycle (cycle = all songs in the folder).
     Spotify + Claude:  the user's Anthropic key drives vibe / artist / playlist / song personalization,
-                       karaoke (instrumental + LRCLIB synced lyrics). Spotify Premium required (Web
+                       standalone user-supplied karaoke. Spotify Premium required (Web
                        Playback SDK).
 """
 
@@ -35,6 +35,7 @@ import math
 import random
 import re
 import zipfile
+import hashlib
 import threading
 import webbrowser
 import urllib.parse
@@ -54,8 +55,15 @@ from eeg_pipeline import (
 )
 
 # ============================ CONFIG ============================
-MUSIC_DIR  = os.environ.get("STRESS_MUSIC", os.path.join(ROOT, "BPM_folder"))
 MUSIC_ZIP  = os.path.join(ROOT, "BPM_folder.zip")
+def _bundled_music_dir():
+    # A changed archive gets a new cache, so an existing old BPM_folder is never reused.
+    if os.path.isfile(MUSIC_ZIP) and zipfile.is_zipfile(MUSIC_ZIP):
+        with open(MUSIC_ZIP, "rb") as source:
+            revision = hashlib.file_digest(source, "sha256").hexdigest()[:16]
+        return os.path.join(ROOT, ".music_library", revision, "BPM_folder")
+    return os.path.join(ROOT, "BPM_folder")
+MUSIC_DIR = os.environ.get("STRESS_MUSIC") or _bundled_music_dir()
 STATIC_DIR = os.path.join(ROOT, "static")
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -87,10 +95,12 @@ BEAT_STALE_SEC = 6.0         # BPM/HRV show blank after this long without a beat
 if not os.path.isdir(MUSIC_DIR) and os.path.isfile(MUSIC_ZIP):
     if zipfile.is_zipfile(MUSIC_ZIP):
         print("[music] extracting BPM_folder.zip ...")
-        with zipfile.ZipFile(MUSIC_ZIP) as zf:
-            zf.extractall(ROOT, members=[m for m in zf.namelist()
-                                         if not m.startswith("__MACOSX/") and "/.DS_Store" not in m
-                                         and not m.endswith(".DS_Store")])
+        if not os.environ.get("STRESS_MUSIC"):
+            from pathlib import PurePosixPath
+            with zipfile.ZipFile(MUSIC_ZIP) as zf:
+                members = [m for m in zf.namelist() if m.startswith("BPM_folder/")
+                           and ".." not in PurePosixPath(m).parts and not m.endswith(".DS_Store")]
+                zf.extractall(os.path.dirname(MUSIC_DIR), members=members)
         print(f"[music] extracted to {MUSIC_DIR}")
     else:
         print("[music] BPM_folder.zip is a Git LFS pointer — run `git lfs pull` first")
@@ -500,8 +510,27 @@ import requests as _requests
 import claude_music
 
 app = FastAPI(title="Adaptune")
+PRODUCTION = os.environ.get("ADAPTUNE_ENV", "").lower() == "production" or HOST not in ("127.0.0.1", "::1", "localhost")
+
+@app.middleware("http")
+async def protect_transport(request, call_next):
+    local = (request.client and request.client.host in ("127.0.0.1", "::1", "testclient")
+             and request.url.hostname in ("127.0.0.1", "::1", "localhost", "testserver"))
+    if request.url.scheme != "https" and (PRODUCTION or not local):
+        return JSONResponse({"ok": False, "error": "HTTPS is required."}, status_code=400)
+    origin = request.headers.get("origin")
+    if request.method not in ("GET", "HEAD", "OPTIONS") and origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        return JSONResponse({"ok": False, "error": "Origin rejected."}, status_code=403)
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    if PRODUCTION:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
 if os.path.isdir(MUSIC_DIR):
     app.mount("/music", StaticFiles(directory=MUSIC_DIR), name="music")
+app.mount("/karaoke", StaticFiles(directory=os.path.join(ROOT, "karaoke")), name="karaoke")
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -678,7 +707,7 @@ def _tracks_in(bucket):
 @app.get("/api/suno/next")
 def api_suno_next(bucket: int = None, current: str = ""):
     """Next SUNO song for the inverse heart-rate BPM folder.
-    Never repeats a song until the whole folder (cycle of 3) has been played."""
+    A one-track bucket repeats that track; multi-track buckets cycle without repeats."""
     if bucket is None:
         with HUB.lock:
             bucket = _song_bucket_for_bpm(HUB.bpm)
@@ -706,27 +735,85 @@ def api_suno_next(bucket: int = None, current: str = ""):
 import secrets as _secrets, base64 as _b64
 SESSIONS, SESS_LOCK = {}, threading.Lock()
 
+KEY_TTL = 30 * 60
+SESSION_TTL = 60 * 60
+
 def _new_session():
-    return {"key": "", "model": None,
-            "mode": None, "value": "", "history": set(), "karaoke_tried": set(),
-            "seed_artist": None,      # resolved artist for Song mode follow-up suggestions
-            "playlist_id": None,      # stable selection from the playlist picker
-            "playlist": None,         # {"id", "name", "count", "index"}; tracks stay in Spotify
-            "access": None, "refresh": None, "exp": 0.0, "state": None,
-            "product": None}
+    return {"key": "", "key_exp": 0, "model": None, "consent": False,
+            "mode": None, "value": "", "typed_preference": "", "history": set(),
+            "playlist_id": None, "playlist": None,
+            "access": None, "refresh": None, "exp": 0.0, "state": None, "product": None,
+            "touched": time.time(), "generation": 0, "busy": False, "calls": [],
+            "last_auto": 0.0}
+
+def _clear_session(s):
+    generation = s.get("generation", 0) + 1
+    s.clear()
+    s.update(_new_session())
+    s["generation"] = generation
+
+def _expire_sessions():
+    now = time.time()
+    with SESS_LOCK:
+        for sid, s in list(SESSIONS.items()):
+            if now - s["touched"] >= SESSION_TTL:
+                _clear_session(s)
+                del SESSIONS[sid]
+            elif s["key"] and now >= s["key_exp"]:
+                s["key"] = ""
+                s["consent"] = False
+                s["generation"] += 1
+                s["busy"] = False
+
+def _session_janitor():
+    while True:
+        time.sleep(30)
+        _expire_sessions()
+
+threading.Thread(target=_session_janitor, daemon=True).start()
 
 def _session(request):
+    _expire_sessions()
     sid = request.cookies.get("sid")
     with SESS_LOCK:
         s = SESSIONS.get(sid)
         if not sid or s is None:
             sid = _secrets.token_urlsafe(24)
-            s = _new_session(); SESSIONS[sid] = s
+            s = _new_session()
+            SESSIONS[sid] = s
+        s["touched"] = time.time()
         return sid, s
 
 def _with_cookie(resp, sid):
-    resp.set_cookie("sid", sid, httponly=True, samesite="lax", max_age=7 * 24 * 3600, path="/")
+    resp.set_cookie("sid", sid, httponly=True, secure=PRODUCTION, samesite="lax",
+                    max_age=SESSION_TTL, path="/")
     return resp
+
+async def _limited_work(sid, s, work, automatic=False):
+    now = time.time()
+    with SESS_LOCK:
+        s["calls"] = [t for t in s["calls"] if now - t < 60]
+        if s["busy"] or len(s["calls"]) >= 8 or (s["calls"] and now - s["calls"][-1] < 5) or (automatic and now - s["last_auto"] < 60):
+            return _with_cookie(JSONResponse({"ok": False, "error": "Please wait before requesting another song or analysis."}, status_code=429), sid)
+        s["busy"] = True
+        s["calls"].append(now)
+        if automatic:
+            s["last_auto"] = now
+        generation = s["generation"]
+    try:
+        payload = await run_in_threadpool(work)
+        if generation != s["generation"]:
+            payload = {"ok": False, "error": "Request canceled. Please try again."}
+    except ValueError:
+        payload = {"ok": False, "error": "No valid result. Check the input and try again."}
+    except Exception:
+        # Provider errors can contain credentials/request bodies. Never echo or log them.
+        payload = {"ok": False, "error": "Provider request failed. Check your key, credits and connection."}
+    finally:
+        if generation == s["generation"]:
+            s["busy"] = False
+    return _with_cookie(JSONResponse(payload), sid)
+
 
 def _sp_basic():
     return _b64.b64encode(f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()).decode()
@@ -741,17 +828,18 @@ def _sp_token(s):
             return s["access"]
         if s.get("refresh"):
             try:
+                generation = s["generation"]
                 r = _requests.post("https://accounts.spotify.com/api/token",
                                    data={"grant_type": "refresh_token", "refresh_token": s["refresh"]},
                                    headers={"Authorization": f"Basic {_sp_basic()}"}, timeout=15)
-                if r.ok:
+                if r.ok and generation == s["generation"]:
                     j = r.json()
                     s["access"] = j["access_token"]
                     s["exp"] = time.time() + j.get("expires_in", 3600)
                     if j.get("refresh_token"):
                         s["refresh"] = j["refresh_token"]
             except Exception as e:
-                print("[spotify] refresh failed:", e)
+                pass  # Never log provider exceptions containing credentials.
         return s["access"]
 
 def _sp_get(s, path, params=None):
@@ -776,44 +864,60 @@ def _sp_get(s, path, params=None):
 @app.post("/api/anthropic_key")
 async def api_anthropic_key(request: Request):
     sid, s = _session(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    s["key"] = (body.get("key") or "").strip()
-    if body.get("model"):
-        s["model"] = (body.get("model") or "").strip() or None
+    body = await request.json()
+    key = body.get("key")
+    if not isinstance(key, str) or len(key) > 512:
+        return JSONResponse({"ok": False, "error": "Invalid key."}, status_code=400)
+    s["generation"] += 1
+    s["busy"] = False
+    s["key"] = key.strip()
+    s["key_exp"] = time.time() + KEY_TTL
+    s["consent"] = False
     return _with_cookie(JSONResponse({"ok": True, "key_set": bool(s["key"])}), sid)
 
+@app.delete("/api/anthropic_key")
+async def remove_anthropic_key(request: Request):
+    sid, s = _session(request)
+    s["key"] = ""
+    s["consent"] = False
+    s["generation"] += 1
+    s["busy"] = False
+    return _with_cookie(JSONResponse({"ok": True}), sid)
+
+@app.post("/api/session/clear")
+async def clear_browser_session(request: Request):
+    sid, s = _session(request)
+    _clear_session(s)
+    return _with_cookie(JSONResponse({"ok": True}), sid)
+
+@app.post("/api/spotify/disconnect")
+async def disconnect_spotify(request: Request):
+    sid, s = _session(request)
+    # Pause before deleting tokens. Invalidate outstanding tasks before this await.
+    token = s.get("access")
+    _clear_session(s)
+    if token:
+        try:
+            await run_in_threadpool(lambda: _requests.put(
+                "https://api.spotify.com/v1/me/player/pause",
+                headers={"Authorization": f"Bearer {token}"}, timeout=5))
+        except Exception:
+            pass
+    return _with_cookie(JSONResponse({"ok": True}), sid)
 
 @app.post("/api/session-analysis")
 async def api_session_analysis(request: Request):
-    """Analyze an authenticated user's saved chart data with their session-only key."""
     sid, s = _session(request)
-    if not s.get("key"):
-        return _with_cookie(JSONResponse({"ok": False, "error": "anthropic_key_required"},
-                                         status_code=400), sid)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    points = body.get("stress_points") or []
-    average = body.get("avg_stress")
-    if not isinstance(points, list) or len(points) > 3600:
-        return _with_cookie(JSONResponse({"ok": False, "error": "invalid_stress_points"},
-                                         status_code=400), sid)
-    try:
-        analysis = await run_in_threadpool(
-            claude_music.analyze_stress_session,
-            points,
-            average,
-            s["key"],
-            s.get("model"),
-        )
-    except Exception as exc:
-        return _with_cookie(JSONResponse({"ok": False, "error": str(exc)}, status_code=502), sid)
-    return _with_cookie(JSONResponse({"ok": True, "analysis": analysis}), sid)
-
+    body = await request.json()
+    if not s["key"]:
+        return _with_cookie(JSONResponse({"ok": False, "error": "Enter your Anthropic API key."}, status_code=400), sid)
+    if body.get("consent") is not True:
+        return _with_cookie(JSONResponse({"ok": False, "error": "Consent is required before sending stress readings."}, status_code=403), sid)
+    # Accept only relative chart coordinates; no email, account id or session date is forwarded.
+    points = body.get("stress_points")
+    key = s["key"]
+    return await _limited_work(sid, s, lambda: {
+        "ok": True, "analysis": claude_music.analyze_stress_session(points, api_key=key)})
 
 @app.get("/api/spotify/status")
 def sp_status(request: Request):
@@ -863,28 +967,33 @@ def sp_login(request: Request):
 def sp_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     sid, s = _session(request)
     if error:
-        return HTMLResponse(f"<p>Spotify auth failed: {error}.</p>")
-    if not code or state != s.get("state"):
+        return HTMLResponse("<p>Spotify authorization was not completed.</p>")
+    if not code or not state or state != s.pop("state", None):
         return HTMLResponse("<p>State mismatch or missing code — close this window and retry.</p>")
+    generation = s["generation"]
     try:
         r = _requests.post("https://accounts.spotify.com/api/token",
                            data={"grant_type": "authorization_code", "code": code,
                                  "redirect_uri": SPOTIFY_REDIRECT_URI},
                            headers={"Authorization": f"Basic {_sp_basic()}"}, timeout=15)
         if not r.ok:
-            return HTMLResponse(f"<p>Token exchange failed ({r.status_code}): {r.text}</p>")
+            return HTMLResponse("<p>Spotify authorization failed. Close this window and try again.</p>")
         j = r.json()
         with _sp_lock:
+            if generation != s["generation"]:
+                return HTMLResponse("<p>Authorization canceled.</p>")
             s["access"] = j["access_token"]; s["refresh"] = j.get("refresh_token")
             s["exp"] = time.time() + j.get("expires_in", 3600)
         me = _sp_get(s, "/me")
+        if generation != s["generation"]:
+            return HTMLResponse("<p>Authorization canceled.</p>")
         s["product"] = (me or {}).get("product")
-    except Exception as e:
-        return HTMLResponse(f"<p>Token exchange error: {e}</p>")
+    except Exception:
+        return HTMLResponse("<p>Spotify authorization failed. Close this window and try again.</p>")
     return HTMLResponse("""<!doctype html><html><body style="background:#0b0f14;color:#dce6f0;font-family:sans-serif">
 <p style="padding:20px">Spotify connected. You can close this window.</p>
 <script>
-  try{ if(window.opener){ window.opener.postMessage("spotify-connected", "*"); } }catch(e){}
+  try{ if(window.opener){ window.opener.postMessage("spotify-connected", location.origin); } }catch(e){}
   setTimeout(function(){ window.close(); }, 400);
   if(!window.opener){ location.href = "/"; }
 </script></body></html>""")
@@ -971,14 +1080,17 @@ def _playlist_track_for_direction(s, playlist, direction, api_key=None, model=No
     if count <= 0:
         return None
     if direction == "stress":
+        # Only independently typed preferences go upstream. Playlist titles never do.
+        suggestions = claude_music.pick_songs(
+            "vibe", s.get("typed_preference", ""), _current_label(),
+            api_key=api_key, model=model, stress_score=snapshot().get("stress"))
         candidates = _playlist_stress_sample(s, playlist)
-        position = claude_music.pick_playlist_track_position(
-            candidates, _current_label(), api_key=api_key, model=model)
-        if position is None:
-            return None
-        playlist["index"] = position
-        return next((candidate["track"] for candidate in candidates
-                     if candidate["position"] == position), None)
+        for suggestion in suggestions:
+            for candidate in candidates:
+                if claude_music.track_matches(suggestion["artist"], suggestion["title"], candidate["track"]):
+                    playlist["index"] = candidate["position"]
+                    return candidate["track"]
+        return None
     if direction == "next":
         playlist["index"] = (int(playlist.get("index") or 0) + 1) % count
     elif direction == "prev":
@@ -991,228 +1103,66 @@ def _playlist_response(playlist):
             "index": playlist["index"], "count": playlist["count"]}
 
 
-def _matches_personalization(mode, value, track, artist=None):
-    """Ensure a Spotify search did not silently resolve an unrelated result."""
-    if mode not in ("artist", "song"):
-        return True
-    wanted = (artist if mode == "artist" and artist else value).casefold().strip()
-    haystack = (track.get("artist", "") if mode == "artist" else track.get("name", "")).casefold()
-    if not wanted or not haystack:
-        return False
-    if wanted in haystack:
-        return True
-    words = [word for word in re.findall(r"[\w]+", wanted) if len(word) > 1]
-    return any(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", haystack) for word in words)
-
-
 @app.post("/api/personalize")
 async def api_personalize(request: Request):
-    """Resolve the next track for the chosen mode.
-       body: {mode: vibe|artist|playlist|song, value, playlist_id?, direction: init|next|prev}"""
     sid, s = _session(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    mode = (body.get("mode") or "").strip().lower()
-    value = (body.get("value") if body.get("value") is not None else s.get("value") or "").strip()
-    playlist_id = (body.get("playlist_id") or s.get("playlist_id") or "").strip()
-    direction = (body.get("direction") or "init").strip().lower()
-    if mode not in ("vibe", "artist", "playlist", "song"):
-        return _with_cookie(JSONResponse({"ok": False, "error": "bad mode"}, status_code=400), sid)
-    if not s["key"]:
-        return _with_cookie(JSONResponse({"ok": False, "error": "no_key"}), sid)
-    if not s["access"]:
-        return _with_cookie(JSONResponse({"ok": False, "error": "not_connected"}), sid)
-    if s.get("product") != "premium":
-        return _with_cookie(JSONResponse({"ok": False, "error": "not_premium"}), sid)
-
-    playlist_changed = mode == "playlist" and playlist_id != (s.get("playlist_id") or "")
-    if mode != s.get("mode") or (value and value != s.get("value")) or playlist_changed:
-        s["history"] = set(); s["karaoke_tried"] = set()
+    body = await request.json()
+    mode, value = body.get("mode"), body.get("value", "")
+    direction = body.get("direction", "init")
+    if mode not in ("vibe", "artist", "song", "playlist") or not isinstance(value, str) or len(value) > 500:
+        return JSONResponse({"ok": False, "error": "Invalid preference."}, status_code=400)
+    if not s["access"] or s["product"] != "premium":
+        return _with_cookie(JSONResponse({"ok": False, "error": "not_connected" if not s["access"] else "not_premium"}), sid)
+    if mode != "playlist" or direction == "stress":
+        if not s["key"]:
+            return _with_cookie(JSONResponse({"ok": False, "error": "no_key"}), sid)
+    if s["busy"]:
+        return _with_cookie(JSONResponse({"ok": False, "error": "Please wait for the current request."}, status_code=429), sid)
+    playlist_id = str(body.get("playlist_id") or "")
+    if mode != s["mode"] or value != s["value"] or playlist_id != (s["playlist_id"] or ""):
+        s["history"] = set()
         s["playlist"] = None
-        s["seed_artist"] = None
-    s["mode"], s["value"] = mode, value or s.get("value", "")
+    s["mode"], s["value"] = mode, value
     s["playlist_id"] = playlist_id if mode == "playlist" else None
+    if mode != "playlist":
+        s["typed_preference"] = value
+    generation, key = s["generation"], s["key"]
 
-    # all the network work (Spotify, Claude) is blocking I/O — run it in the
-    # threadpool so the event loop keeps serving the 10 Hz /ws stream
-    def _work():
-        tok = _sp_token(s)
-        try:
-            if mode == "playlist":
-                if s["playlist"] is None:
-                    if not value:
-                        return {"ok": False, "error": "no_value"}
-                    pl = _select_playlist(s, value, s.get("playlist_id"))
-                    if pl is None:
-                        return {"ok": False, "error": "playlist_not_found"}
-                    s["playlist"] = pl
-                pl = s["playlist"]
-                if not pl["count"]:
-                    return {"ok": False, "error": "playlist_empty"}
-                tr = _playlist_track_for_direction(
-                    s, pl, direction, api_key=s["key"], model=s["model"])
-                if not tr:
-                    error = "playlist_selection_failed" if direction == "stress" else "playlist_track_unavailable"
-                    return {"ok": False, "error": error}
-                return {"ok": True, "track": tr, "mode": mode,
-                        "playlist": _playlist_response(pl)}
+    def work():
+        if mode == "playlist":
+            playlist = s["playlist"] or _select_playlist(s, playlist_id=playlist_id, name=value)
+            if not playlist:
+                return {"ok": False, "error": "playlist_not_found"}
+            track = _playlist_track_for_direction(s, playlist, direction, api_key=key)
+            if generation != s["generation"]:
+                return {"ok": False}
+            s["playlist"] = playlist
+            if not track:
+                return {"ok": False, "error": "No reliable match in this playlist window. Your current song will continue."}
+            return {"ok": True, "track": track, "playlist": _playlist_response(playlist)}
+        track = claude_music.resolve_one(mode, value, _current_label(), set(s["history"]),
+                    api_key=key, user_token=_sp_token(s), stress_score=snapshot().get("stress"))
+        if track and generation == s["generation"]:
+            s["history"].add(_track_key(track))
+            return {"ok": True, "track": track}
+        return {"ok": False, "error": "not_found"}
 
-            if mode == "song" and direction == "init":
-                hits = claude_music.search_query(value, limit=10, user_token=tok)
-                tr = next((hit for hit in hits if _matches_personalization("song", value, hit)), None)
-                if not tr:
-                    return {"ok": False, "error": "not_found"}
-                s["seed_artist"] = tr["artist"]
-            elif mode == "song":
-                # After the exact requested song, every next/previous/stress
-                # request remains with that resolved artist rather than asking
-                # Claude to infer it again from a title.
-                artist = s.get("seed_artist")
-                if not artist:
-                    hits = claude_music.search_query(value, limit=10, user_token=tok)
-                    seed = next((hit for hit in hits if _matches_personalization("song", value, hit)), None)
-                    if not seed:
-                        return {"ok": False, "error": "not_found"}
-                    artist = s["seed_artist"] = seed["artist"]
-                tr = claude_music.resolve_one("artist", artist, _current_label(), s["history"],
-                                              api_key=s["key"], model=s["model"], user_token=tok)
-                if not tr or not _matches_personalization("artist", artist, tr, artist=artist):
-                    return {"ok": False, "error": "not_found"}
-            else:
-                tr = claude_music.resolve_one(mode, value, _current_label(), s["history"],
-                                              api_key=s["key"], model=s["model"], user_token=tok)
-                if not tr:
-                    return {"ok": False, "error": "not_found"}
-                if not _matches_personalization(mode, value, tr):
-                    return {"ok": False, "error": "not_found"}
-            s["history"].add(_track_key(tr))
-            return {"ok": True, "track": tr, "mode": mode}
-        except Exception as e:
-            print("[personalize] failed:", e)
-            return {"ok": False, "error": str(e)}
-
-    payload = await run_in_threadpool(_work)
-    return _with_cookie(JSONResponse(payload), sid)
+    return await _limited_work(sid, s, work, automatic=direction == "stress")
 
 
-# ---------------- karaoke ----------------
-@app.post("/api/karaoke")
-async def api_karaoke(request: Request):
-    """Fetch an instrumental + lyrics package.
-       body: {current: {name, artist, duration_ms} | null, mode?, value?, playlist_id?, direction?}
-       mode/value (when sent) update the session first — a category chosen WHILE
-       karaoke is open must reach the server too."""
-    sid, s = _session(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    b_mode = (body.get("mode") or "").strip().lower()
-    b_value = (body.get("value") or "").strip()
-    b_playlist_id = (body.get("playlist_id") or "").strip()
-    direction = (body.get("direction") or "init").strip().lower()
-    if b_mode in ("vibe", "artist", "playlist", "song"):
-        playlist_changed = b_mode == "playlist" and b_playlist_id != (s.get("playlist_id") or "")
-        if b_mode != s.get("mode") or (b_value and b_value != s.get("value")) or playlist_changed:
-            s["history"] = set(); s["karaoke_tried"] = set(); s["playlist"] = None
-            s["seed_artist"] = None
-        s["mode"] = b_mode
-        if b_value:
-            s["value"] = b_value
-        s["playlist_id"] = b_playlist_id if b_mode == "playlist" else None
-    if not (s["key"] and s["access"]):
-        return _with_cookie(JSONResponse({"ok": False, "error": "not_initialized"}), sid)
-    if not s.get("mode"):
-        return _with_cookie(JSONResponse({"ok": False, "error": "no_choice"}), sid)
-    mode = s["mode"]
+# Karaoke has no Spotify or external lyrics dependency.
+def _karaoke_catalog():
+    with open(os.path.join(ROOT, "karaoke", "catalog.json"), encoding="utf-8") as source:
+        return json.load(source)["songs"]
 
-    def _work():
-        tok = _sp_token(s)
-        try:
-            cur = body.get("current") or None
-            if cur and cur.get("name"):
-                pkg = claude_music.karaoke_package(cur["name"], cur.get("artist", ""),
-                                                   cur.get("duration_ms"),
-                                                   api_key=s["key"], model=s["model"], user_token=tok)
-                if pkg:
-                    s["karaoke_tried"].add(f"{cur.get('artist','')} — {cur['name']}".lower())
-                    return {"ok": True, **pkg}
-                if mode not in ("vibe", "artist"):
-                    # the spec's message for a failing CURRENT song is the song one, in every mode
-                    return {"ok": False, "error": "song"}
-                # vibe/artist: the current song failed -> find another in-category
+@app.get("/api/karaoke/catalog")
+def karaoke_catalog():
+    return {"songs": _karaoke_catalog()}
 
-            if mode == "playlist":
-                pl = s.get("playlist")
-                if not pl:
-                    pl = _select_playlist(s, s.get("value", ""), s.get("playlist_id"))
-                    if pl is None:
-                        return {"ok": False, "error": "playlist"}
-                    s["playlist"] = pl
-                if not pl["count"]:
-                    return {"ok": False, "error": "playlist"}
-                first_track = _playlist_track_for_direction(
-                    s, pl, direction, api_key=s["key"], model=s["model"])
-                if not first_track:
-                    return {"ok": False, "error": "playlist"}
-                # Karaoke may need to reject a track without lyrics or an
-                # instrumental, but probes at most 25 one-item Spotify reads.
-                order = [(pl["index"] + step) % pl["count"]
-                         for step in range(min(25, pl["count"]))]
-                attempted = False
-                for index in order[:25]:
-                    tr = first_track if index == pl["index"] else _playlist_track_at(s, pl, index)
-                    if not tr:
-                        continue
-                    key = _track_key(tr)
-                    if key in s["karaoke_tried"]:
-                        continue
-                    attempted = True
-                    s["karaoke_tried"].add(key)
-                    pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
-                                                       api_key=s["key"], model=s["model"], user_token=tok)
-                    if pkg:
-                        pl["index"] = index
-                        pkg["original"] = tr
-                        pkg["playlist"] = _playlist_response(pl)
-                        return {"ok": True, **pkg}
-                if not attempted:                     # whole window already tried -> let a retry start over
-                    s["karaoke_tried"] = set()
-                return {"ok": False, "error": "playlist"}
-
-            if mode == "song":
-                # first request plays the exact favorite song's karaoke; after that the loop
-                # continues with other songs by that artist (like « / » in song mode)
-                exact_key = (s.get("value") or "").strip().lower()
-                if exact_key and ("exact:" + exact_key) not in s["karaoke_tried"]:
-                    s["karaoke_tried"].add("exact:" + exact_key)
-                    hits = claude_music.search_query(s["value"], limit=10, user_token=tok)
-                    tr = next((hit for hit in hits if _matches_personalization("song", s["value"], hit)), None)
-                    if tr:
-                        pkg = claude_music.karaoke_package(tr["name"], tr["artist"], tr.get("duration_ms"),
-                                                           api_key=s["key"], model=s["model"], user_token=tok)
-                        if pkg:
-                            pkg["original"] = tr
-                            s["karaoke_tried"].add(_track_key(tr))
-                            return {"ok": True, **pkg}
-                    return {"ok": False, "error": "song"}
-
-            # vibe / artist / song-loop: keep asking Claude until a song has both halves
-            pkg = claude_music.pick_karaoke_song(mode, s["value"], _current_label(),
-                                                 s["karaoke_tried"],
-                                                 api_key=s["key"], model=s["model"], user_token=tok)
-            if pkg:
-                s["karaoke_tried"].add(_track_key(pkg["original"]))
-                return {"ok": True, **pkg}
-            return {"ok": False, "error": "song"}
-        except Exception as e:
-            print("[karaoke] failed:", e)
-            return {"ok": False, "error": "playlist" if mode == "playlist" else "song"}
-
-    payload = await run_in_threadpool(_work)
-    return _with_cookie(JSONResponse(payload), sid)
+@app.get("/api/karaoke")
+def api_karaoke():
+    # Owner-supplied recording and verbatim transcript. No paid API or Spotify data.
+    return {"ok": True, "song": _karaoke_catalog()[0]}
 
 
 # ---------------------------------------------------------------------------

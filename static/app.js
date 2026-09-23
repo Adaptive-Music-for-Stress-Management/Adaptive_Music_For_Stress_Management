@@ -119,12 +119,14 @@ async function adaptSpotifyToStress(s) {
     return;
   }
   if (label === stressLabelSeen) return;
-  stressLabelSeen = label;
+  if (Date.now() - lastAutomaticRequest < 60000) return;
   if (stressAdaptInFlight || !spMode || !spTrack || audioSource !== "spotify") return;
+  if (preferenceRequestBusy) return;
+  stressLabelSeen = label;
+  lastAutomaticRequest = Date.now();
   stressAdaptInFlight = true;
   try {
-    if (karaokeActive) await fetchKaraoke(null, false, "stress");
-    else await spRequestTrack("stress");
+    await spRequestTrack("stress");
   } finally {
     stressAdaptInFlight = false;
   }
@@ -304,6 +306,14 @@ function ownsAudioHandoff(id, source) {
   return id === audioHandoffId && audioSource === source;
 }
 async function claimAudio(src) {
+  if (src !== "karaoke") {
+    $("karaokeAudio").pause();
+    karaokeGeneration += 1;
+  }
+  if (src === "spotify") {
+    for (const node of instrumentSources) { try { node.stop(); } catch (_) {} }
+    instrumentSources.clear();
+  }
   if (audioSource === src) return true;
   const handoffId = ++audioHandoffId;
   audioSource = src;
@@ -313,7 +323,11 @@ async function claimAudio(src) {
     await sunoFadeStop(handoffId);
   } else {
     spotifyPlayRequestId += 1;
-    await spotifyFadeStop(handoffId);
+    if (spPlayer) {
+      try { await spPlayer.pause(); } catch (_) { if (handoffId === audioHandoffId) audioSource = "spotify"; $("karaokeMsg").hidden = false; $("karaokeMsg").textContent = "Pause Spotify before starting local audio."; return false; }
+    }
+    spIsPlaying = false;
+    if (src === "karaoke") { sunoLoadRequestId += 1; sunoEls.forEach(el => el.pause()); sunoPlaying = false; }
   }
   return ownsAudioHandoff(handoffId, src);
 }
@@ -460,6 +474,10 @@ $("sunoBar").addEventListener("input", () => {
 });
 
 /* ============================ 7 · Spotify + Claude personalize ============================ */
+let preferenceRequestBusy = false, preferenceGeneration = 0;
+let lastAutomaticRequest = 0;
+const instrumentSources = new Set();
+let spotifyConnectionGeneration = 0;
 let spPlayer = null, spDeviceId = null, spConnected = false, spPremium = false, spKeySet = false;
 let spMode = null, spValue = "", spTrack = null, spIsPlaying = false;
 let spLastPos = 0, spDuration = 0, spDragging = false;
@@ -470,8 +488,10 @@ async function spToken() {
   try { return (await (await fetch("/api/spotify/token")).json()).access_token; } catch(e){ return null; }
 }
 async function refreshSpotify() {
+  const revision = spotifyConnectionGeneration;
   let j = {};
   try { j = await (await fetch("/api/spotify/status")).json(); } catch(e){}
+  if (revision !== spotifyConnectionGeneration) return;
   spConnected = !!j.connected; spPremium = !!j.premium; spKeySet = !!j.key_set;
   const msg = $("spMsg");
   $("keyRow").hidden = spKeySet;
@@ -481,9 +501,9 @@ async function refreshSpotify() {
   else if (!spConnected)  { msg.textContent = "Step 2 — connect your Spotify account."; msg.className = "setup-msg mono"; }
   else if (!spPremium)    { msg.textContent = "I apologize, but you need Spotify premium to access this feature."; msg.className = "setup-msg mono err"; }
   else                    { msg.textContent = ""; }
-  const full = spKeySet && spConnected && spPremium;
+  const full = spConnected && spPremium;
   $("spFull").hidden = !full;
-  $("spSetup").hidden = full;
+  $("spSetup").hidden = full && spKeySet;
   if (!full) { playlistCatalog = null; spPlaylistId = null; }
   if (spConnected) maybeInitSpotify();
 }
@@ -497,12 +517,13 @@ $("antConfirm").addEventListener("click", async () => {
 });
 $("spConnect").addEventListener("click", () =>
   window.open("/login", "spotify_auth", "width=520,height=720,menubar=no,toolbar=no"));
-window.addEventListener("message", e => { if (e.data === "spotify-connected") refreshSpotify(); });
+window.addEventListener("message", e => { if (e.origin === location.origin && e.data === "spotify-connected") refreshSpotify(); });
 
 async function maybeInitSpotify() {
   if (spPlayer || !window._sdkLoaded || !spConnected) return;
+  const revision = spotifyConnectionGeneration;
   const tok = await spToken();
-  if (!tok) return;
+  if (!tok || spPlayer || !spConnected || revision !== spotifyConnectionGeneration) return;
   spPlayer = new Spotify.Player({
     name: "Adaptune", volume: 0.9,
     getOAuthToken: cb => spToken().then(t => t && cb(t)),
@@ -553,11 +574,12 @@ $("prefInput").addEventListener("input", () => {
 });
 
 async function confirmPref() {
+  if (preferenceRequestBusy) return;
   const value = $("prefInput").value.trim();
   if (!value || !tabMode || tabMode === "playlist") return;
   spMode = tabMode; spValue = value;
   setPrefLoading(tabMode === "playlist" ? "loading your playlist…" : "asking Claude…");
-  if (karaokeActive) { fetchKaraoke(null); return; }     // in karaoke mode the choice feeds karaoke
+
   const ok = await spRequestTrack("init");
   if (ok) clearPrefLoading();
 }
@@ -595,16 +617,19 @@ function clearPlaylistPickerSelection() {
 async function loadPlaylistPicker() {
   if (playlistLoading) return playlistLoading;
   if (playlistCatalog) { renderPlaylistPicker(); return; }
+  const revision = spotifyConnectionGeneration;
   const list = $("playlistList");
   list.innerHTML = '<div class="setup-msg mono loading"><span class="spin"></span>loading your playlists…</div>';
   playlistLoading = (async () => {
     try {
       const r = await fetch("/api/playlists");
       const j = await r.json();
+      if (revision !== spotifyConnectionGeneration) return;
       if (!j.ok) throw new Error(j.error || "playlist lookup failed");
       playlistCatalog = j.playlists || [];
       renderPlaylistPicker();
     } catch(e) {
+      if (revision !== spotifyConnectionGeneration) return;
       list.textContent = "Couldn't load your playlists. Reconnect Spotify and try again.";
       list.className = "playlist-list setup-msg mono err";
     } finally {
@@ -640,15 +665,20 @@ function markPlaylistSelected(playlistId) {
     btn.classList.toggle("on", btn.dataset.playlistId === playlistId));
 }
 async function choosePlaylist(playlist) {
+  if (preferenceRequestBusy) return;
   spMode = "playlist";
   spValue = playlist.name;
   spPlaylistId = playlist.id;
   markPlaylistSelected(playlist.id);
   setPrefLoading("loading selected playlist…");
-  if (karaokeActive) { fetchKaraoke(null); return; }
+
   await spRequestTrack("init");
 }
 async function spRequestTrack(direction) {
+  if (preferenceRequestBusy) return false;
+  preferenceRequestBusy = true;
+  const revision = preferenceGeneration;
+  document.querySelectorAll("#prefConfirm, #spPrevBtn, #spNextBtn").forEach(el => el.disabled = true);
   if (direction !== "init") {
     setPrefLoading(direction === "stress" ? "adapting to your current stress level…" : "asking Claude…");
   }
@@ -657,6 +687,7 @@ async function spRequestTrack(direction) {
         body: JSON.stringify({mode: spMode, value: spValue,
                               playlist_id: spMode === "playlist" ? spPlaylistId : null, direction})});
     const j = await r.json();
+    if (revision !== preferenceGeneration) return false;
     if (!j.ok) {
       const errs = {
         no_key: "Enter your Anthropic API key first.",
@@ -683,6 +714,10 @@ async function spRequestTrack(direction) {
     $("prefMsg").textContent = "Request failed — is the server still running?";
     $("prefMsg").className = "setup-msg mono err";
     return false;
+  } finally {
+    preferenceRequestBusy = false;
+    clearPrefLoading();
+    document.querySelectorAll("#prefConfirm, #spPrevBtn, #spNextBtn").forEach(el => el.disabled = false);
   }
 }
 async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
@@ -704,6 +739,11 @@ async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
     if (spTrack && spPlayer) await spFade(0, 500);                    // fade out old
     if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
     const safePosition = Math.max(0, Math.min(Math.round(positionMs || 0), Math.max(0, (track.duration_ms || 0) - 250)));
+    if (!track.image) throw new Error("Artwork unavailable.");
+    $("spArtwork").src = track.image;
+    $("spOpen").href = track.external_url || "https://open.spotify.com/track/" + encodeURIComponent(track.id);
+    $("spTrackName").textContent = track.name + " — " + (track.artist || "");
+    $("spPlayerUI").hidden = false;
     const response = await fetch("https://api.spotify.com/v1/me/player/play?device_id=" + spDeviceId, {
       method: "PUT", headers: {Authorization: "Bearer " + tok, "Content-Type": "application/json"},
       body: JSON.stringify({uris: [track.uri], position_ms: safePosition}),
@@ -774,6 +814,11 @@ async function stopSessionAudio() {
   // Ending a session owns the final handoff: invalidate any song lookup or
   // crossfade that could otherwise restart playback after the dashboard closes.
   const stopToken = ++audioHandoffId;
+  preferenceGeneration += 1;
+  karaokeGeneration += 1;
+  $("karaokeAudio").pause();
+  for (const node of instrumentSources) { try { node.stop(); } catch (_) {} }
+  instrumentSources.clear();
   sunoLoadRequestId += 1;
   spotifyPlayRequestId += 1;
   sunoFetching = false;
@@ -798,6 +843,9 @@ async function stopSessionAudio() {
     await spPlayer.pause().catch(() => {});
   })();
   await Promise.all([...stopSuno, stopSpotify]);
+  await fetch("/api/anthropic_key", {method: "DELETE"});
+  spKeySet = false;
+  refreshSpotify();
 }
 $("spPlayBtn").addEventListener("click", async () => {
   if (!spPlayer) return;
@@ -821,8 +869,7 @@ $("spNextBtn").addEventListener("click", () => spSkip("next"));
 $("spPrevBtn").addEventListener("click", () => spSkip("prev"));
 function spSkip(direction) {
   if (!spMode) return;
-  if (karaokeActive) fetchKaraoke(null, false, direction); // karaoke loop: follow the selected playlist too
-  else spRequestTrack(direction);                 // re-prompt Claude / walk the playlist
+  spRequestTrack(direction);                 // re-prompt Claude / walk the playlist
 }
 
 /* position poll: timeline, lyric sync, end-of-track detection */
@@ -837,7 +884,7 @@ setInterval(async () => {
   $("spCur").textContent = fmtTime(pos / 1000);
   $("spEnd").textContent = fmtTime(dur / 1000);
   $("spPlayBtn").innerHTML = st.paused ? "&#9654;" : "&#10074;&#10074;";
-  if (karaokeActive) syncLyrics(pos);
+
   // track finished -> advance the loop. spLastPos is the latch: it only holds a
   // near-the-end value if we actually heard the song play there, and it resets to 0
   // the moment we fire, so this can't double-trigger. (The SDK's own
@@ -864,7 +911,9 @@ const reliefViews = {karaoke: $("rsKaraoke"), breathe: $("rsBreathe"), play: $("
 const reliefBtns  = {karaoke: $("rKaraoke"),  breathe: $("rBreathe"),  play: $("rPlay")};
 let reliefMode = null;
 function setRelief(mode) {
+  if (mode === "play" && audioSource === "spotify") { alert("Switch to local music before using play-along."); return; }
   reliefMode = (reliefMode === mode) ? null : mode;
+  if (reliefMode !== "karaoke") { karaokeGeneration += 1; $("karaokeAudio").pause(); }
   $("rsEmpty").hidden = reliefMode !== null;
   for (const k of Object.keys(reliefViews)) {
     const on = k === reliefMode;
@@ -882,118 +931,40 @@ $("rBreathe").addEventListener("click", () => setRelief("breathe"));
 $("rPlay").addEventListener("click", () => setRelief("play"));
 
 /* ============================ 9 · karaoke ============================ */
-let karaokeActive = false, lyricLines = [], lyricEls = [], lyricIdx = -1;
-let karaokeFetching = false;
-const KMSG = {
-  not_initialized: "I apologize, but you must first initialize the personalized music feature.",
-  no_choice: "I apologize, but you must first choose a vibe, artist, playlist, or song to play",
-  song: "I apologize, but we couldn’t find the lyrics or instrumental version of that song.",
-  playlist: "I apologize, but we couldn’t find any song within your playlist that has both an instrumental version and lyrics.",
-};
-function kShow(el) {
-  for (const id of ["karaokeMsg", "karaokeLoading", "lyricsBox"]) $(id).hidden = id !== el;
-}
-function enterKaraoke() {
-  if (!(spKeySet && spConnected && spPremium)) { $("karaokeMsg").textContent = KMSG.not_initialized; kShow("karaokeMsg"); return; }
-  if (!spMode) { $("karaokeMsg").textContent = KMSG.no_choice; kShow("karaokeMsg"); return; }
-  // a song already playing? ask for THAT song's instrumental + lyrics
-  const current = (audioSource === "spotify" && spTrack)
-      ? {name: spTrack.name, artist: spTrack.artist, duration_ms: spTrack.duration_ms} : null;
-  fetchKaraoke(current, !!current);
-}
-async function currentSpotifyPlayback() {
-  try {
-    const state = spPlayer && await spPlayer.getCurrentState();
-    if (state) return {positionMs: state.position || 0, wasPlaying: !state.paused};
-  } catch(e) {}
-  return {positionMs: 0, wasPlaying: spIsPlaying};
-}
-async function fetchKaraoke(current, preservePlayback = false, direction = "init") {
+let karaokeActive = false, karaokeFetching = false, karaokeGeneration = 0;
+async function enterKaraoke() {
   if (karaokeFetching) return;
+  preferenceGeneration += 1; // A delayed recommendation cannot interrupt karaoke.
+  const msg = $("karaokeMsg"); msg.hidden = false;
   karaokeFetching = true;
-  kShow("karaokeLoading");
-  let j = null;
+  const revision = ++karaokeGeneration;
+  $("karaokeChoose").disabled = true;
+  msg.textContent = "Loading karaoke…";
   try {
-    // send the chosen category along: the server session is the source of truth for
-    // mode/value, and a choice made WHILE karaoke is open must reach it too
-    const r = await fetch("/api/karaoke", {method:"POST", headers:{"Content-Type":"application/json"},
-                                           body: JSON.stringify({current, mode: spMode, value: spValue,
-                                                                 playlist_id: spMode === "playlist" ? spPlaylistId : null,
-                                                                 direction})});
-    j = await r.json();
-  } catch(e){}
-  try {
-    if (!karaokeActive) return;
-    if (!j || !j.ok) {
-      $("karaokeMsg").textContent = KMSG[(j && j.error) || "song"] || KMSG.song;
-      kShow("karaokeMsg");
-      return;
-    }
-    // The original track keeps playing during lookup. Capture its current
-    // position only after both karaoke resources are available, then start the
-    // instrumental at that exact moment.
-    const sameSource = current && j.source &&
-      current.name === j.source.name && current.artist === j.source.artist;
-    const playback = preservePlayback && sameSource
-      ? await currentSpotifyPlayback()
-      : {positionMs: 0, wasPlaying: true};
-    renderLyrics(j.lyrics);
-    syncLyrics(playback.positionMs);
-    kShow("lyricsBox");
-    const started = await spPlayTrack(j.instrumental, {
-      positionMs: playback.positionMs,
-      autoplay: playback.wasPlaying,
-    });
-    if (started) {
-      if (j.playlist) {
-        markPlaylistSelected(j.playlist.id);
-        $("spModeSub").textContent =
-          `karaoke · playlist · ${j.playlist.name} · ${j.playlist.index + 1}/${j.playlist.count}`;
-      } else {
-        $("spModeSub").textContent = "karaoke · " + (j.source ? j.source.name : "");
-      }
-    }
-  } finally {
-    karaokeFetching = false;
-    clearPrefLoading();
-  }
+    const response = await fetch("/api/karaoke");
+    const result = await response.json();
+    if (revision !== karaokeGeneration || !karaokeActive) return;
+    if (!result.ok) throw new Error("Karaoke unavailable.");
+    if (!await claimAudio("karaoke")) throw new Error("Pause Spotify before starting karaoke.");
+    if (revision !== karaokeGeneration || !karaokeActive) return;
+    const song = result.song;
+    const heading = document.createElement("h3");
+    heading.textContent = song.title + " — " + song.author;
+    const lyrics = document.createElement("div");
+    lyrics.className = "static-lyrics"; lyrics.textContent = song.lyrics;
+    $("lyricsBox").replaceChildren(heading, lyrics); $("lyricsBox").hidden = false;
+    $("karaokeAudio").src = "/karaoke/" + encodeURIComponent(song.audio);
+    await $("karaokeAudio").play();
+    if (revision !== karaokeGeneration || !karaokeActive) { $("karaokeAudio").pause(); return; }
+    msg.textContent = "Full supplied transcript · not synchronized to playback";
+  } catch (error) {
+    if (revision === karaokeGeneration) msg.textContent = "Could not start karaoke. Pause Spotify if needed, then press Restart karaoke.";
+  } finally { karaokeFetching = false; $("karaokeChoose").disabled = false; }
 }
-function renderLyrics(ly) {
-  const box = $("lyricsBox");
-  box.innerHTML = ""; lyricEls = []; lyricLines = []; lyricIdx = -1;
-  if (ly && ly.synced && ly.synced.length) {
-    for (const [ms, text] of ly.synced) {
-      const div = document.createElement("div");
-      div.className = "lyric-line";
-      div.textContent = text || "♪";
-      box.appendChild(div);
-      lyricEls.push(div); lyricLines.push(ms);
-    }
-  } else if (ly && ly.plain) {
-    for (const line of ly.plain.split("\n")) {
-      const div = document.createElement("div");
-      div.className = "lyric-line plain";
-      div.textContent = line || "♪";
-      box.appendChild(div);
-    }
-  }
-  box.scrollTop = 0;
-}
-function syncLyrics(posMs) {
-  if (!lyricLines.length) return;
-  let idx = -1;
-  for (let i = 0; i < lyricLines.length; i++) { if (lyricLines[i] <= posMs + 150) idx = i; else break; }
-  if (idx === lyricIdx) return;
-  lyricIdx = idx;
-  lyricEls.forEach((el, i) => {
-    el.classList.toggle("now", i === idx);
-    el.classList.toggle("past", i < idx);
-  });
-  if (idx >= 0) {
-    const el = lyricEls[idx], box = $("lyricsBox");
-    box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.clientHeight / 2;
-  }
-}
+$("karaokeChoose").addEventListener("click", enterKaraoke);
+$("karaokeAudio").addEventListener("play", () => {
+  if (audioSource !== "karaoke" || !karaokeActive) $("karaokeAudio").pause();
+});
 
 /* ============================ 10 · breathe ============================ */
 let breatheOn = false, breatheBuffering = true;
@@ -1205,6 +1176,7 @@ document.addEventListener("keydown", e => {
 });
 
 function playNote(midi) {
+  if (audioSource === "spotify") { alert("Switch to local music before using instruments."); return; }
   ensureAudioGraph();
   const t = audioCtx.currentTime;
   const f = 440 * Math.pow(2, (midi - 69) / 12);
@@ -1216,6 +1188,9 @@ function playNote(midi) {
   const o2 = audioCtx.createOscillator(); o2.type = "sine";     o2.frequency.value = f * 2;
   const g2 = audioCtx.createGain(); g2.gain.value = 0.25;
   o1.connect(g); o2.connect(g2); g2.connect(g); g.connect(audioCtx.destination);
+  instrumentSources.add(o1); instrumentSources.add(o2);
+  o1.onended = () => instrumentSources.delete(o1);
+  o2.onended = () => instrumentSources.delete(o2);
   o1.start(t); o2.start(t);
   o1.stop(t + 1.5); o2.stop(t + 1.5);
 }
@@ -1227,6 +1202,7 @@ function noiseBuffer() {
   return (noiseBuffer._b = b);
 }
 function playDrum(id) {
+  if (audioSource === "spotify") { alert("Switch to local music before using instruments."); return; }
   ensureAudioGraph();
   const t = audioCtx.currentTime;
   const out = audioCtx.createGain(); out.connect(audioCtx.destination);
@@ -1236,6 +1212,7 @@ function playDrum(id) {
     o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    instrumentSources.add(o); o.onended = () => instrumentSources.delete(o);
     o.connect(g); g.connect(out); o.start(t); o.stop(t + dur + 0.05);
   };
   const noise = (dur, vol, filterType, freq) => {
@@ -1248,6 +1225,7 @@ function playDrum(id) {
       const fl = audioCtx.createBiquadFilter(); fl.type = filterType; fl.frequency.value = freq;
       src.connect(fl); node = fl;
     }
+    instrumentSources.add(src); src.onended = () => instrumentSources.delete(src);
     node.connect(g); g.connect(out); src.start(t); src.stop(t + dur + 0.05);
   };
   switch (id) {
@@ -1261,3 +1239,29 @@ function playDrum(id) {
     case "ride":    noise(0.7, 0.3, "bandpass", 6800); tone(720, 700, 0.4, 0.08); break;
   }
 }
+
+async function clearSpotifyData() {
+  spotifyConnectionGeneration += 1;
+  spConnected = false;
+  preferenceGeneration += 1; karaokeGeneration += 1;
+  await stopSessionAudio();
+  if (spPlayer) spPlayer.disconnect();
+  spPlayer = null; spDeviceId = null;
+  spTrack = null; spMode = null; spValue = ""; spLastPos = 0; spDuration = 0;
+  playlistCatalog = null; spPlaylistId = null;
+  $("playlistList")?.replaceChildren();
+  $("spArtwork").removeAttribute("src"); $("spOpen").removeAttribute("href");
+  $("spPlayerUI").hidden = true; $("spTrackName").textContent = "";
+  $("spModeSub").textContent = ""; $("prefInput").value = "";
+  clearPrefMessage();
+  await fetch("/api/spotify/disconnect", {method: "POST"});
+  audioSource = "suno";
+  await refreshSpotify();
+}
+$("spDisconnect").addEventListener("click", clearSpotifyData);
+$("antRemove").addEventListener("click", async () => {
+  preferenceGeneration += 1; karaokeGeneration += 1;
+  await fetch("/api/anthropic_key", {method:"DELETE"});
+  await refreshSpotify();
+});
+setInterval(refreshSpotify, 30000);

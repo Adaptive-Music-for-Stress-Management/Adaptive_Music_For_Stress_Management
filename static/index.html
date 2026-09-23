@@ -76,7 +76,7 @@
         <div class="preview-stage" id="landingPlayStage"></div>
         <button class="carousel-arrow next" data-carousel="play" aria-label="Next play mode">›</button>
       </div>
-      <div class="feature-copy"><span>04</span><h2>Play/sing along</h2><p>Play a piano, build a beat on the drums, or follow synchronized karaoke lyrics so regulating stress can feel active, musical, and personal.</p></div>
+      <div class="feature-copy"><span>04</span><h2>Play/sing along</h2><p>Play a piano, build a beat on the drums, or open karaoke to sing along with the included recording and full transcript so regulating stress can feel active, musical, and personal.</p></div>
     </article>
 
     <article class="feature-row">
@@ -98,7 +98,7 @@
 <div class="session-overlay" id="sessionOverlay" hidden>
   <div class="session-modal"><button class="modal-close" id="sessionClose" aria-label="Close">×</button><div class="eyebrow mono" id="sessionDate"></div><h1>Session details</h1>
     <section class="session-panel"><h2>Six live channels</h2><div class="saved-graphs" id="savedGraphs"></div></section>
-    <section class="session-panel stress-session-panel"><div class="saved-stress-chart"><h2>Stress over time</h2><div class="stress-chart-frame"><canvas id="savedStressCanvas"></canvas><div class="saved-stress-empty mono" id="savedStressEmpty" hidden>NO STRESS READINGS FOR THIS SESSION</div></div></div><aside class="session-analysis"><div class="average-label mono">AVERAGE STRESS</div><div class="average-score" id="savedAverage">—</div><label>Anthropic API key<input type="password" id="analysisKey" placeholder="sk-ant-…"></label><button class="btn portal-btn" id="analyzeSessionBtn">Get AI analysis</button><div class="portal-message" id="analysisResult"></div></aside></section>
+    <section class="session-panel stress-session-panel"><div class="saved-stress-chart"><h2>Stress over time</h2><div class="stress-chart-frame"><canvas id="savedStressCanvas"></canvas><div class="saved-stress-empty mono" id="savedStressEmpty" hidden>NO STRESS READINGS FOR THIS SESSION</div></div></div><aside class="session-analysis"><div class="average-label mono">AVERAGE STRESS</div><div class="average-score" id="savedAverage">—</div><label>Anthropic API key<input type="password" id="analysisKey" placeholder="sk-ant-…"></label><p class="privacy-note">AI-generated wellness information may be inaccurate. It is not a diagnosis or medical advice. Your key is kept in server memory for up to 30 minutes.</p><label class="analysis-consent"><input type="checkbox" id="analysisConsent"> Send this session's relative timestamps, stress scores and average to Anthropic. No email or account ID is included. My API account will be charged.</label><button class="btn" id="analysisRemoveKey">Remove API key</button><button class="btn portal-btn" id="analyzeSessionBtn">Get AI analysis</button><div class="portal-message" id="analysisResult"></div></aside></section>
   </div>
 </div>
 
@@ -216,8 +216,12 @@
           <div class="rs-empty" id="rsEmpty">Choose a relief option below</div>
 
           <div class="rs-view" id="rsKaraoke" hidden>
-            <div class="rs-msg" id="karaokeMsg" hidden></div>
-            <div class="k-loading" id="karaokeLoading" hidden><span class="spin"></span> finding instrumental &amp; lyrics…</div>
+            <div class="karaoke-controls">
+<p class="privacy-note">Opening karaoke replaces the current music with Ransom — Jade Key (ft. Mary Sweet). The supplied transcript is shown in full, without timing. No AI request is made.</p>
+<button class="btn" id="karaokeChoose">Restart karaoke</button>
+<audio id="karaokeAudio" controls preload="none"></audio>
+</div><div class="rs-msg" id="karaokeMsg" hidden></div>
+            <div class="k-loading" id="karaokeLoading" hidden><span class="spin"></span> loading karaoke…</div>
             <div class="lyrics" id="lyricsBox" hidden></div>
           </div>
 
@@ -277,7 +281,9 @@
         <div class="divider"></div>
 
         <!-- Spotify + Claude personalization -->
-        <div id="spSetup">
+        <p class="privacy-note">Your Anthropic key is sent to this server and kept in memory for up to 30 minutes. It is cleared when you remove it, end a session or sign out. API calls are billed to your account. Preferences and stress scores are sent to Anthropic; Spotify results are not. Automatic changes are limited to once per minute.</p>
+<div class="account-actions"><button class="btn" id="antRemove">Remove API key</button><button class="btn" id="spDisconnect">Disconnect Spotify</button><a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">Manage Spotify permissions</a><a href="/static/privacy.html">Privacy details</a></div>
+<div id="spSetup">
           <div class="setup-row" id="keyRow">
             <input type="password" id="antKey" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off"/>
             <button class="btn" id="antConfirm">Confirm</button>
@@ -288,7 +294,8 @@
 
         <div id="spFull" hidden>
           <div class="player" id="spPlayerUI" hidden>
-            <div class="p-name" id="spTrackName">—</div>
+            <div class="spotify-attribution"><img id="spArtwork" alt="Album cover" width="80" height="80"><div><img src="/static/spotify-logo.svg" alt="Spotify" width="100" height="30"><a id="spOpen" target="_blank" rel="noopener">Open in Spotify</a></div></div>
+<div class="p-name" id="spTrackName">—</div>
             <div class="p-timeline">
               <span class="mono t-cur" id="spCur">00:00</span>
               <input type="range" id="spBar" min="0" max="1000" value="0"/>
@@ -326,7 +333,7 @@
 <audio id="audioA" preload="auto"></audio>
 <audio id="audioB" preload="auto"></audio>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="/static/app.js?v=adaptune-20260825-suno"></script>
-<script src="/static/portal.js?v=adaptune-20260821-2"></script>
+<script src="/static/app.js?v=adaptune-20260922-integrations"></script>
+<script src="/static/portal.js?v=adaptune-20260922-integrations"></script>
 </body>
 </html>

@@ -278,3 +278,17 @@ input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.25)}
 @media(max-width:850px){.hero{grid-template-columns:1fr;padding-top:48px}.feature-row,.feature-row.reverse{grid-template-columns:1fr}.feature-row.reverse .preview-card,.feature-row.reverse .feature-copy{order:initial}.preview-card{min-height:330px}.music-preview,.spotify-preview{grid-template-columns:1fr;text-align:center}.music-preview .preview-kicker,.spotify-preview .preview-kicker{align-self:center}.album-orbit,.spotify-mark{margin:auto}.stress-session-panel{grid-template-columns:1fr}.saved-graphs{grid-template-columns:1fr}.landing-actions>a:not(.btn){display:none}}
 @media(max-width:560px){.hero-copy h1{font-size:48px}.preview-card{padding:24px 12px}.account-heading{align-items:flex-start;flex-direction:column}.account-heading h1{font-size:40px}.account-header{gap:8px}.account-email{display:none}.landing-brand span{display:none}.portal-page footer{flex-direction:column;gap:8px}.landing-drums{grid-template-columns:repeat(3,64px)}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important}}
+
+.privacy-note { font-size: 12px; line-height: 1.6; color: var(--muted, #a5b6c4); }
+.account-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 14px 0; }
+.spotify-attribution { display:flex; align-items:center; gap:16px; margin: 8px 0 14px; }
+.spotify-attribution > img { object-fit:contain; }
+.spotify-attribution > div { display:flex; flex-direction:column; gap:10px; }
+.spotify-attribution a { color:#fff; font-size:13px; }
+.analysis-consent { display:flex; gap:12px; align-items:flex-start; font-size:12px; line-height:1.6; }
+.analysis-consent input { width:auto; flex:0 0 auto; }
+.karaoke-controls { display:grid; gap:12px; padding-bottom:16px; }
+.karaoke-controls label { font-size:12px; line-height:1.5; }
+.karaoke-controls audio { width:100%; }
+.static-lyrics { white-space:pre-wrap; color:var(--ink, #eee); line-height:1.8; font-size:16px; padding:18px 0; }
+button:disabled { opacity:0.5; cursor:wait; }

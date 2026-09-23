@@ -146,55 +146,78 @@ class PlaylistTests(unittest.TestCase):
             {"id": "later", "name": "Evening", "track_count": 22},
         ])
 
-    def test_claude_playlist_choice_is_limited_to_presented_tracks(self):
-        tracks = [{"name": "Quiet Song", "artist": "Calm Artist"},
-                  {"name": "Brighter Song", "artist": "Calm Artist"}]
-        with patch.object(claude_music, "_complete", return_value='{"index": 1}'):
-            self.assertEqual(claude_music.pick_playlist_track_index(tracks, "Stressed", api_key="test"), 1)
-        with patch.object(claude_music, "_complete", return_value='{"index": 99}'):
-            self.assertIsNone(claude_music.pick_playlist_track_index(tracks, "Stressed", api_key="test"))
 
-    def test_claude_stress_choice_returns_only_an_actual_playlist_position(self):
+    def test_playlist_metadata_never_enters_prompt_and_selection_is_local(self):
+        session = server._new_session()
+        session["typed_preference"] = "quiet piano"
+        playlist = {"id": "private-id", "name": "PRIVATE_PLAYLIST", "count": 20, "index": 8}
         candidates = [
-            {"position": 12, "track": {"name": "Quiet Song", "artist": "Calm Artist"}},
-            {"position": 37, "track": {"name": "Brighter Song", "artist": "Calm Artist"}},
+            {"position": 8, "track": {"name": "SECRET_SONG", "artist": "SECRET_ARTIST"}},
+            {"position": 9, "track": {"name": "Yellow", "artist": "Coldplay"}},
         ]
-        with patch.object(claude_music, "_complete", return_value='{"index": 37}'):
-            self.assertEqual(
-                claude_music.pick_playlist_track_position(candidates, "Stressed", api_key="test"), 37)
-        with patch.object(claude_music, "_complete", return_value='{"index": 20}'):
-            self.assertIsNone(
-                claude_music.pick_playlist_track_position(candidates, "Stressed", api_key="test"))
+        with patch.object(claude_music, "_complete", return_value='[{"title":"Yellow","artist":"Coldplay"}]') as ai, \
+             patch.object(server, "_playlist_stress_sample", return_value=candidates):
+            result = server._playlist_track_for_direction(session, playlist, "stress", api_key="fake")
+        self.assertEqual(result["name"], "Yellow")
+        self.assertEqual(playlist["index"], 9)
+        prompt = ai.call_args.args[0]
+        self.assertIn("quiet piano", prompt)
+        for private in ("PRIVATE_PLAYLIST", "private-id", "SECRET_SONG", "SECRET_ARTIST"):
+            self.assertNotIn(private, prompt)
 
 
-class PersonalizationGuardTests(unittest.TestCase):
-    def test_artist_and_song_searches_reject_unrelated_spotify_results(self):
-        track = {"name": "Billie Jean", "artist": "Michael Jackson"}
-        self.assertTrue(server._matches_personalization("song", "Billie Jean", track))
-        self.assertTrue(server._matches_personalization("artist", "Michael Jackson", track))
-        self.assertFalse(server._matches_personalization("song", "Blue Monday", track))
-        self.assertFalse(server._matches_personalization("artist", "Daft Punk", track))
+class MatchingTests(unittest.TestCase):
+    def test_search_ignores_first_wrong_result_and_versions(self):
+        wrong = spotify_track("Yellow - Live", "Coldplay")
+        tribute = spotify_track("Yellow", "Coldplay Tribute")
+        right = spotify_track("YELLOW (2011 Remastered)", "Coldplay")
+        with patch.object(claude_music, "_search", return_value={"tracks": {"items": [wrong, tribute, right]}}):
+            self.assertEqual(claude_music.search_track("coldplay", "Yellow")["name"], right["name"])
 
-
-class InstrumentalArtistTests(unittest.TestCase):
-    def test_artist_matching_tolerates_accents_but_rejects_an_unrelated_artist(self):
+    def test_explicit_version_is_required(self):
+        self.assertFalse(claude_music.track_matches("Artist", "Song", spotify_track("Song - Remix", "Artist")))
+        self.assertTrue(claude_music.track_matches("Artist", "Song (Live)", spotify_track("Song - Live", "Artist")))
+        self.assertFalse(claude_music.artists_match("Queen", "Queen Tribute"))
         self.assertTrue(claude_music.artists_match("Beyoncé", "Beyonce feat. Jay-Z"))
-        self.assertFalse(claude_music.artists_match("Beyoncé", "Piano Tribute Players"))
 
-    def test_instrumental_search_filters_out_other_artists_before_claude_can_choose(self):
-        wrong = {"id": "wrong", "name": "Song Instrumental", "artist": "Piano Tribute Players", "album": "Covers"}
-        right = {"id": "right", "name": "Song Instrumental", "artist": "Beyonce", "album": "Singles"}
-        with patch.object(claude_music, "search_query", return_value=[wrong, right]):
-            result = claude_music.find_instrumental("Song", "Beyoncé")
-        self.assertEqual(result["id"], "right")
+    def test_history_not_sent_to_claude(self):
+        with patch.object(claude_music, "_complete", return_value='[{"title":"Yellow","artist":"Coldplay"}]') as ai, \
+             patch.object(claude_music, "search_track", return_value=None):
+            claude_music.resolve_one("song", "my typed song", "Calm", {"SECRET_PLAYED"}, api_key="fake", stress_score=12)
+        prompt = ai.call_args.args[0]
+        self.assertIn("my typed song", prompt)
+        self.assertIn("12", prompt)
+        self.assertNotIn("SECRET_PLAYED", prompt)
+
+    def test_bad_ai_json_is_rejected(self):
+        for reply in ('{"title":"Song"}', '[{"title":1,"artist":"Artist"}]', 'not JSON'):
+            with patch.object(claude_music, "_complete", return_value=reply), self.assertRaises(ValueError):
+                claude_music.pick_songs("vibe", "gentle", "Calm", api_key="fake")
 
 
 class SessionAnalysisTests(unittest.TestCase):
-    def test_saved_session_analysis_accepts_finite_chart_points(self):
-        with patch.object(claude_music, "_complete", return_value='{"analysis":"Stress eased steadily."}'):
+    def test_analysis_strips_identifiers_and_recomputes_average(self):
+        with patch.object(claude_music, "_complete", return_value='{"analysis":"Stress eased steadily."}') as ai:
             result = claude_music.analyze_stress_session(
-                [{"x": 0, "y": 58.2}, {"x": 15, "y": 41.7}], 49.95, api_key="test")
+                [{"x": 0, "y": 58.2, "email": "PRIVATE"}, {"x": 15, "y": 41.8}], 999, api_key="test")
         self.assertEqual(result, "Stress eased steadily.")
+        self.assertNotIn("PRIVATE", ai.call_args.args[0])
+        self.assertIn("50.0", ai.call_args.args[0])
+
+    def test_rejects_invalid_points_before_billing(self):
+        with patch.object(claude_music, "_complete") as ai:
+            for points in ([], [{"x": 0, "y": float("nan")}], [{"x": 1, "y": 101}]):
+                with self.assertRaises(ValueError):
+                    claude_music.analyze_stress_session(points, api_key="test")
+            ai.assert_not_called()
+
+    def test_karaoke_is_local_and_never_calls_claude(self):
+        with patch.object(claude_music, "_complete") as ai:
+            response = server.api_karaoke()
+        self.assertEqual(response["song"]["id"], "ransom")
+        self.assertEqual(response["song"]["author"], "Jade Key (ft. Mary Sweet)")
+        self.assertIn("You were like a ransom note.", response["song"]["lyrics"])
+        ai.assert_not_called()
 
 
 if __name__ == "__main__":

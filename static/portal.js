@@ -106,6 +106,9 @@ document.getElementById("authForm").addEventListener("submit", async event => {
 });
 
 document.getElementById("signOutBtn").addEventListener("click", async () => {
+  await clearSpotifyData();
+  await fetch("/api/session/clear", {method:"POST"});
+  document.getElementById("analysisConsent").checked = false;
   if (supabaseClient) await supabaseClient.auth.signOut();
 });
 
@@ -230,24 +233,29 @@ document.getElementById("sessionOverlay").addEventListener("click", event => {
 });
 
 document.getElementById("analyzeSessionBtn").addEventListener("click", async () => {
+  const button = document.getElementById("analyzeSessionBtn");
+  if (button.disabled) return;
+  if (!document.getElementById("analysisConsent").checked) { portalMessage("analysisResult", "Please give permission to send stress readings first.", true); return; }
   const key = document.getElementById("analysisKey").value.trim();
   if (!selectedSession || !key) {
     portalMessage("analysisResult", "Enter your Anthropic API key first.", true);
     return;
   }
-  const button = document.getElementById("analyzeSessionBtn");
+  const sessionBeingAnalyzed = selectedSession;
   button.disabled = true;
   portalMessage("analysisResult", "Analyzing your session…");
   try {
-    await fetch("/api/anthropic_key", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key})});
+    const saved = await fetch("/api/anthropic_key", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key})});
+    if (!saved.ok) throw new Error("Could not securely save the key. Check your connection.");
     document.getElementById("analysisKey").value = "";
     const response = await fetch("/api/session-analysis", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({stress_points:selectedSession.stress_points || [], avg_stress:selectedSession.avg_stress}),
+      body:JSON.stringify({consent: true, stress_points:sessionBeingAnalyzed.stress_points || [], avg_stress:sessionBeingAnalyzed.avg_stress}),
     });
     const result = await response.json();
+    if (selectedSession !== sessionBeingAnalyzed) return;
     if (!response.ok || !result.ok) throw new Error(result.error || "Analysis failed");
-    portalMessage("analysisResult", result.analysis);
+    portalMessage("analysisResult", "AI-generated wellness information — may be inaccurate.\n\n" + result.analysis);
   } catch (error) {
     portalMessage("analysisResult", error.message || String(error), true);
   } finally { button.disabled = false; }
@@ -330,15 +338,18 @@ function renderPlayPreview() {
   } else if (landingPlayIndex === 1) {
     stage.innerHTML = '<div class="preview-kicker mono">DRUMS</div><div class="landing-drums">'+["Kick","Hat","Snare","Tom","Crash","Ride"].map(name=>`<button class="landing-drum">${name}</button>`).join("")+"</div>";
   } else {
-    stage.innerHTML = '<div class="preview-kicker mono">KARAOKE</div><div class="landing-lyrics"><span>Follow the feeling</span><b>sing into the calm</b><span>one line at a time</span></div>';
+    stage.innerHTML = '<div class="preview-kicker mono">KARAOKE</div><div class="landing-lyrics"><span>Follow the feeling</span><b>sing into the calm</b><span>full lyrics, no timing</span></div>';
   }
   stage.querySelectorAll("[data-note]").forEach(button => button.addEventListener("click", () => playPreviewNote(button.dataset.note)));
 }
 
 function playPreviewNote(note) {
+  if (audioSource === "spotify") { alert("Switch to local music before using play-along."); return; }
   const frequencies={C:261.63,D:293.66,E:329.63,F:349.23,G:392,A:440,B:493.88};
   const audioContext = new (window.AudioContext || window.webkitAudioContext)();
   const oscillator=audioContext.createOscillator(), gain=audioContext.createGain();
+  instrumentSources.add(oscillator);
+  oscillator.onended = () => { instrumentSources.delete(oscillator); audioContext.close(); };
   oscillator.frequency.value=frequencies[note];gain.gain.setValueAtTime(.12,audioContext.currentTime);gain.gain.exponentialRampToValueAtTime(.001,audioContext.currentTime+.5);oscillator.connect(gain).connect(audioContext.destination);oscillator.start();oscillator.stop(audioContext.currentTime+.5);
 }
 
@@ -360,3 +371,11 @@ window.addEventListener("resize", drawLandingSignal);
 renderPlayPreview();
 requestAnimationFrame(drawLandingSignal);
 configureSupabase();
+
+document.getElementById("analysisRemoveKey").addEventListener("click", async () => {
+  await fetch("/api/anthropic_key", {method:"DELETE"});
+  document.getElementById("analysisKey").value = "";
+  document.getElementById("analysisConsent").checked = false;
+  portalMessage("analysisResult", "API key removed.");
+  await refreshSpotify();
+});

@@ -1,0 +1,55 @@
+{
+  "source": "User-supplied replacement music; owner confirms generated during active Suno Pro/Premier subscription",
+  "tracks": [
+    {
+      "bpm": 60,
+      "file": "60/Vinyl Wobble.mp3",
+      "sha256": "f9586b8c1a2e681e40d8f704b3acc429e2ebaef67fe9f7d249574ef68e42705c"
+    },
+    {
+      "bpm": 70,
+      "file": "70/Vinyl Wobble.mp3",
+      "sha256": "30a44a8e2e6b7b328d9f969ace27f3bd75f96c4fda8e8a316f003f79b17b7526"
+    },
+    {
+      "bpm": 80,
+      "file": "80/Tape Wobble.mp3",
+      "sha256": "304c2cfed1cf79cccff6cedf6ce4c7a16015c4203599258895118f78521ceffc"
+    },
+    {
+      "bpm": 90,
+      "file": "90/Vinyl Dreams.mp3",
+      "sha256": "cf1328a75e677937f8ba1571196c1dde1f611ef40f28b461cd58967c7cadd6fd"
+    },
+    {
+      "bpm": 100,
+      "file": "100/Dusty Afternoon.mp3",
+      "sha256": "9156a08846c44ee338e402367674d84e437f4499037648d6ceefa5280557eb39"
+    },
+    {
+      "bpm": 110,
+      "file": "110/Vinyl Crackles.mp3",
+      "sha256": "dc1401a508e6cb083e6a682118392247d75e495e2be9ffd77562c4116811e01d"
+    },
+    {
+      "bpm": 120,
+      "file": "120/Vinyl Head-Nod.mp3",
+      "sha256": "3b4749767af2e18a88e64b83aeeef7973a9c8f75c6180049830c33064f85a040"
+    },
+    {
+      "bpm": 130,
+      "file": "130/Vinyl Warmth.mp3",
+      "sha256": "efdba8129b44b99f5ae5feb95d523ac76bde61b3a04c48079e982e2f6b77290d"
+    },
+    {
+      "bpm": 140,
+      "file": "140/Where the Buses Turn.mp3",
+      "sha256": "b7a4f65a64cd42d122105103f269d1bb9099a5c3e3fb76bfb4a2993a0169d8cf"
+    },
+    {
+      "bpm": 150,
+      "file": "150/The Quiet Things.mp3",
+      "sha256": "e38868818a3545eb1eb34966528f05c087b82d82c7aa416a363103f878783e18"
+    }
+  ]
+}

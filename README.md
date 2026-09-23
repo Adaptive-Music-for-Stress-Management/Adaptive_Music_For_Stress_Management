@@ -12,8 +12,8 @@ Two editions live in this repository:
 | **Computer** | `final_computer` | Python web dashboard · Muse 2 headband (MuseLSL) or demo mode |
 | **Mobile** | `final_mobile` | Native iOS app (open in Xcode) · camera-PPG reader or Apple Watch streaming |
 
-This branch carries both: the computer app at the repo root and the Xcode project in
-`AdaptiveMusicMobile/`.
+This branch carries the computer app. The Xcode project is on `final_mobile`.
+See [integration changes and deployment notes](INTEGRATION_CHANGES.md) for data handling, keys, music and verification.
 
 ```
  Muse 2 ── MuseLSL (EEG + PPG) ──►┐
@@ -24,9 +24,9 @@ This branch carries both: the computer app at the repo root and the Xcode projec
                      Calm 0–33 · Mild-stress 33–66 · Stressed 66–100
                                            │
                                            ▼
-        ┌── SUNO AI songs (inverse user BPM → BPM_folder/60…150, no-repeat cycles)
+        ┌── SUNO AI songs (inverse user BPM → BPM_folder/60…150, one supplied track per bucket)
         ├── Spotify + Claude personalization (Vibe · Artist · Playlist · Song)
-        └── Relief: Karaoke (instrumental + synced lyrics) · Breathe · Play-along
+        └── Relief: Karaoke (bundled recording + full transcript) · Breathe · Play-along
 ```
 
 ## The flow
@@ -57,16 +57,16 @@ This branch carries both: the computer app at the repo root and the Xcode projec
   them, and they play with a full timeline + transport. Playlist mode walks your actual
   playlist with « and ».
 - **Relief** — three options:
-  - **Karaoke** — Claude finds an *instrumental version* of the song and LRCLIB supplies
-    Spotify-style time-synced lyrics; the track name and timeline switch to the
-    instrumental. Pausing the song pauses the lyrics.
+  - **Karaoke** — opening karaoke replaces the current music with the owner-supplied
+    Ransom recording and displays the complete supplied transcript. No AI request,
+    instrumental search or timestamp synchronization is used.
   - **Breathe** — an expanding/contracting circle driven only by the user's live heart
     rate at `5 × log10(user BPM)`, recalculated whenever BPM changes. Expansion and
     contraction take equal time. Spotify songs are blocked here — only AI-generated
     songs work.
   - **Play-along** — a piano (keys **A–J** = C–B, **W/E** = C♯/D♯, **T/Y/U** = F♯/G♯/A♯)
     and a drum kit (**A S D F G H J K** = kick, hi-hat, snare, low/mid/high tom, crash,
-    ride). Tap to play on mobile.
+    ride). Tap to play on mobile. Instruments are blocked while Spotify owns audio.
 
 ## Supabase setup (accounts and saved sessions)
 
@@ -174,7 +174,7 @@ server.py               # FastAPI: MuseLSL ingest, PPG beat detection, scoring, 
 eeg_pipeline.py         # 256 Hz buffers, five EEG bands, live Signal-JEPA inference
 create_JEPA/            # reproducible UNIVERSE Signal-JEPA training/evaluation package
 models/                 # deployed Signal-JEPA weights and configuration
-claude_music.py         # Claude song-picking · Spotify search · instrumental finder · LRCLIB
+claude_music.py         # Claude suggestions · local Spotify matching · session analysis
 static/                 # the dashboard (index.html, style.css, app.js)
 BPM_folder.zip          # SUNO AI library (Git LFS) — auto-extracted on first run
 AdaptiveMusicMobile/    # the iOS + watchOS Xcode project (see final_mobile)
