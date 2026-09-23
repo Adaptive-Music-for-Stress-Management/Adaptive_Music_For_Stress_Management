@@ -306,8 +306,9 @@ final class CameraPPGReader: NSObject, ObservableObject, AVCaptureVideoDataOutpu
 // MARK: - Pulse detector
 
 /// Simple peak detector on a single PPG channel:
-/// baseline removal (moving average) → light smoothing → local-maximum peaks
-/// above an adaptive threshold with a refractory period → RR intervals.
+/// baseline removal (moving average) → normalise → light smoothing →
+/// local-maximum peaks above an adaptive threshold with a refractory period
+/// → RR intervals.
 private struct PulseDetector {
     private static let baselineWindow = 45      // ~1.5 s at 30 fps
     private static let smoothWindow = 5
@@ -315,6 +316,7 @@ private struct PulseDetector {
     private static let minRR = 0.33             // 180 bpm
     private static let maxRR = 2.0              // 30 bpm
     private static let rrHistory = 8
+    private static let minModulation = 0.0015   // 0.15 % of light level
 
     private var raw: [Double] = []
     private var filtered: [Double] = []
@@ -354,7 +356,9 @@ private struct PulseDetector {
         let baseline = raw.reduce(0, +) / Double(raw.count)
 
         // Blood inflow darkens the image, so invert: a beat becomes a peak.
-        filtered.append(baseline - sample)
+        // Normalising by the baseline makes thresholds independent of how much
+        // light gets through the finger.
+        filtered.append((baseline - sample) / max(1, baseline))
         if filtered.count > Self.smoothWindow { filtered.removeFirst() }
         guard samples > Self.warmupSamples, filtered.count == Self.smoothWindow else { return nil }
 
@@ -365,7 +369,7 @@ private struct PulseDetector {
 
         // Adaptive threshold tracks recent peak height and decays slowly.
         peakAmplitude *= 0.995
-        guard isLocalMax, v > 0.15, v > peakAmplitude * 0.4 else { return nil }
+        guard isLocalMax, v > Self.minModulation, v > peakAmplitude * 0.4 else { return nil }
         peakAmplitude = max(peakAmplitude, v)
 
         let peakTime = t - Double(mid) / 30.0
