@@ -232,7 +232,7 @@ final class PersonalizeEngine: ObservableObject {
                 return
             }
             let player = try AVAudioPlayer(contentsOf: url)
-            karaokePlayer = player; karaoke = song
+            karaokePlayer = player; karaoke = song; suno.songName = song.title; suno.bucket = nil
             player.prepareToPlay(); karaokePlaying = player.play()
         } catch {
             if revision == generation { karaokeMessage = "Could not load karaoke audio." }

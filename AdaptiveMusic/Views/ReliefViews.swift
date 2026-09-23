@@ -88,15 +88,8 @@ struct KaraokeView: View {
                 Text("Karaoke").font(.headline)
                 Text("Ransom — Jade Key (ft. Mary Sweet). Opening karaoke replaces the current music. Full supplied transcript, without timing or AI requests.")
                     .font(.caption).foregroundStyle(Theme.muted)
-                Button(engine.karaokeBusy ? "Loading…" : "Restart karaoke") {
-                    Task { await engine.startKaraoke() }
-                }.disabled(engine.karaokeBusy)
                 if let message = engine.karaokeMessage { Text(message).foregroundStyle(StressLabel.stressed.color) }
                 if let song = engine.karaoke {
-                    Text(song.title).font(.headline)
-                    Text(song.author).font(.caption).foregroundStyle(Theme.muted)
-                    Button(engine.karaokePlaying ? "Pause recording" : "Play recording") { engine.toggleKaraoke() }
-                        .disabled(engine.audioSource != .karaoke)
                     Text(song.lyrics).foregroundStyle(Theme.ink).lineSpacing(6).textSelection(.enabled)
                 }
             }
