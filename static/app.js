@@ -791,7 +791,10 @@ async function spPlayTrack(track, {positionMs = 0, autoplay = true} = {}) {
   try {
     if (spPlayer?.activateElement) await spPlayer.activateElement().catch(()=>{});
     if (spTrack && spPlayer) await spFade(0, 500);                    // fade out old
-    if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") return false;
+    if (requestId !== spotifyPlayRequestId || audioSource !== "spotify") {
+      if (previousTrack && spPlayer && audioSource === "spotify") await spFade(0.9, 500).catch(()=>{});
+      return false;
+    }
     const safePosition = Math.max(0, Math.min(Math.round(positionMs || 0), Math.max(0, (track.duration_ms || 0) - 250)));
     if (!track.image) throw new Error("Artwork unavailable.");
     $("spArtwork").src = track.image;
