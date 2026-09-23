@@ -21,7 +21,19 @@ struct PersonalizeCard: View {
             CardTitle("Personalize")
             sunoPlayer
             Divider().background(Theme.line)
-            if engine.initialized { spotifyFull } else { spotifySetup }
+            if !engine.initialized { spotifySetup }
+            if spotify.connected && spotify.premium { spotifyFull }
+            Text("Your Anthropic key is stored in iOS Keychain. Preferences and stress score are sent to Anthropic for suggestions. Calls are billed to your API account; automatic changes are limited to once per minute.")
+                .font(.caption).foregroundStyle(Theme.muted)
+            if let error = claude.keyError { Text(error).foregroundStyle(StressLabel.stressed.color) }
+            if claude.keySet {
+                Button("Remove API key") { claude.removeKey() }
+            }
+            if spotify.connected {
+                Button("Disconnect Spotify and clear its data") { Task { await engine.disconnectSpotify() } }
+            }
+            Link("Manage Spotify app permissions", destination: URL(string: "https://www.spotify.com/account/apps/")!)
+                .font(.caption)
         }
     }
 
@@ -118,10 +130,20 @@ struct PersonalizeCard: View {
         VStack(spacing: 10) {
             if let track = engine.currentTrack {
                 VStack(spacing: 8) {
+                    HStack(spacing: 12) {
+                        AsyncImage(url: track.imageURL) { image in
+                            image.resizable().scaledToFit()
+                        } placeholder: { ProgressView() }
+                        .frame(width: 72, height: 72)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image("SpotifyLogo").resizable().scaledToFit().frame(width: 90, height: 28)
+                            Link("Open in Spotify", destination: track.externalURL).font(.caption)
+                        }
+                    }
                     Text("\(track.name) — \(track.artist)")
                         .font(.system(size: 14, weight: .semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     timeline(current: spScrub ?? Double(engine.positionMs) / 1000.0,
                              total: Double(engine.durationMs) / 1000.0,
                              scrub: $spScrub) { t in
@@ -210,6 +232,7 @@ struct PersonalizeCard: View {
             }
         }
         .animation(.easeOut(duration: 0.25), value: engine.busy)
+        .disabled(engine.busy || claude.busy)
     }
 
     private var playlistPicker: some View {

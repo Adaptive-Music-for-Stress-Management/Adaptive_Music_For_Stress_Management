@@ -11,6 +11,7 @@ struct ReliefCard: View {
     @EnvironmentObject var relief: ReliefState
     @EnvironmentObject var engine: PersonalizeEngine
     @EnvironmentObject var breathe: BreatheController
+    @State private var playError = false
 
     var body: some View {
         Card {
@@ -26,6 +27,7 @@ struct ReliefCard: View {
     private func reliefButton(_ label: String, _ mode: ReliefState.Mode) -> some View {
         let on = relief.mode == mode
         return Button {
+            if mode == .playAlong && engine.playAlongBlocked { playError = true; return }
             withAnimation(.easeInOut(duration: 0.35)) {
                 relief.mode = on ? nil : mode
             }
@@ -48,6 +50,9 @@ struct ReliefCard: View {
                 .foregroundStyle(on ? Theme.accent : Theme.ink)
         }
         .buttonStyle(.plain)
+        .alert("Play-along unavailable", isPresented: $playError) {
+            Button("OK", role: .cancel) {}
+        } message: { Text("Switch to local music before using instruments with Adaptune.") }
     }
 }
 
@@ -77,67 +82,23 @@ struct ReliefStage: View {
 
 struct KaraokeView: View {
     @EnvironmentObject var engine: PersonalizeEngine
-
     var body: some View {
-        Group {
-            if let msg = engine.karaokeMessage {
-                Text(msg)
-                    .font(.system(size: 14))
-                    .foregroundStyle(StressLabel.stressed.color)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 8)
-            } else if engine.karaokeBusy {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text("finding instrumental & lyrics…")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Theme.muted)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Karaoke").font(.headline)
+                Text("Ransom — Jade Key (ft. Mary Sweet). Opening karaoke replaces the current music. Full supplied transcript, without timing or AI requests.")
+                    .font(.caption).foregroundStyle(Theme.muted)
+                Button(engine.karaokeBusy ? "Loading…" : "Restart karaoke") {
+                    Task { await engine.startKaraoke() }
+                }.disabled(engine.karaokeBusy)
+                if let message = engine.karaokeMessage { Text(message).foregroundStyle(StressLabel.stressed.color) }
+                if let song = engine.karaoke {
+                    Text(song.title).font(.headline)
+                    Text(song.author).font(.caption).foregroundStyle(Theme.muted)
+                    Button(engine.karaokePlaying ? "Pause recording" : "Play recording") { engine.toggleKaraoke() }
+                        .disabled(engine.audioSource != .karaoke)
+                    Text(song.lyrics).foregroundStyle(Theme.ink).lineSpacing(6).textSelection(.enabled)
                 }
-            } else if let pkg = engine.karaoke {
-                LyricsScroller(lyrics: pkg.lyrics, positionMs: engine.positionMs)
-            }
-        }
-    }
-}
-
-/// Spotify-style scrolling synced lyrics; pausing the song pauses the scroll
-/// (position stops advancing).
-struct LyricsScroller: View {
-    let lyrics: [LyricLine]
-    let positionMs: Int
-
-    private var currentIndex: Int? {
-        let synced = lyrics.filter { $0.ms >= 0 }
-        guard !synced.isEmpty else { return nil }
-        var idx: Int? = nil
-        for (i, line) in lyrics.enumerated() where line.ms >= 0 && line.ms <= positionMs + 150 {
-            idx = i
-        }
-        return idx
-    }
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 10) {
-                    Spacer(minLength: 90)
-                    ForEach(Array(lyrics.enumerated()), id: \.element.id) { i, line in
-                        Text(line.text.isEmpty ? "♪" : line.text)
-                            .font(.system(size: line.ms >= 0 ? 16 : 13,
-                                          weight: i == currentIndex ? .bold : .semibold))
-                            .foregroundStyle(i == currentIndex ? Theme.ink :
-                                             (currentIndex != nil && i < currentIndex!) ? Theme.muted : Theme.faint)
-                            .multilineTextAlignment(.center)
-                            .scaleEffect(i == currentIndex ? 1.05 : 1)
-                            .id(i)
-                    }
-                    Spacer(minLength: 90)
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .onChange(of: currentIndex) { _, idx in
-                guard let idx else { return }
-                withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(idx, anchor: .center) }
             }
         }
     }
@@ -146,6 +107,7 @@ struct LyricsScroller: View {
 // MARK: - Play-along
 
 struct PlayAlongView: View {
+    @EnvironmentObject var music: PersonalizeEngine
     @State private var instrument: Instrument = .piano       // default to piano (always)
     private static let engine = InstrumentEngine()
 
@@ -153,14 +115,15 @@ struct PlayAlongView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            if music.playAlongBlocked { Text("Switch to local music before playing instruments.").foregroundStyle(StressLabel.stressed.color) }
             HStack(spacing: 8) {
                 toggle("Piano", .piano)
                 toggle("Drums", .drums)
             }
             if instrument == .piano {
-                PianoView(engine: PlayAlongView.engine)
+                PianoView(engine: PlayAlongView.engine).disabled(music.playAlongBlocked)
             } else {
-                DrumsView(engine: PlayAlongView.engine)
+                DrumsView(engine: PlayAlongView.engine).disabled(music.playAlongBlocked)
             }
         }
     }

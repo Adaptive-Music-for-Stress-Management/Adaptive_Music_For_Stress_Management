@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SessionHistoryView: View {
+    @EnvironmentObject var claude: ClaudeService
+    @EnvironmentObject var engine: PersonalizeEngine
     @EnvironmentObject var account: SupabaseService
     @EnvironmentObject var hub: SignalHub
     @State private var selected: SavedSession?
@@ -32,7 +34,12 @@ struct SessionHistoryView: View {
             .background(Theme.bg)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { VStack(alignment: .leading) { Text("ADAPTUNE").font(.headline).tracking(3); Text("Tune your state. Find your calm.").font(.caption2).foregroundStyle(Theme.muted) } }
-                ToolbarItem(placement: .topBarTrailing) { Button("Sign out") { Task { await account.signOut() } }.font(.caption) }
+                ToolbarItem(placement: .topBarTrailing) { Button("Sign out") { Task {
+                    await engine.stopSessionAudio()
+                    await engine.disconnectSpotify()
+                    claude.removeKey()
+                    await account.signOut()
+                } }.font(.caption) }
             }
             .sheet(item: $selected) { SessionDetailView(session: $0) }
         }
@@ -62,6 +69,7 @@ struct SessionDetailView: View {
     @State private var analysis = ""
     @State private var analysisError: String?
     @State private var analyzing = false
+    @State private var consent = false
     private let channels = [("bpm","BPM"),("hrv_diff","HRV differential"),("right_brain","EEG right brain"),("left_brain","EEG left brain"),("right_ear","EEG right ear"),("left_ear","EEG left ear")]
 
     var body: some View {
@@ -77,13 +85,19 @@ struct SessionDetailView: View {
                         Text("AVERAGE STRESS").font(.caption.monospaced()).foregroundStyle(Theme.muted)
                         Text(session.avgStress.map { String(format: "%.1f", $0) } ?? "—").font(.system(size: 48, weight: .bold, design: .monospaced)).foregroundStyle(Theme.accent)
                         VStack(spacing: 12) {
+                            Text("AI-generated wellness information may be inaccurate. It is not a diagnosis or medical advice.")
+                                .font(.caption).foregroundStyle(Theme.muted)
+                            Toggle("Send this session's relative timestamps, stress scores and average to Anthropic. No email or account ID is included. My API account will be charged.", isOn: $consent)
+                                .font(.caption)
                             SecureField(claude.keySet ? "Use saved API key or enter a replacement" : "Anthropic API key (sk-ant-…)", text: $key)
                                 .padding(11)
                                 .background(Theme.panel2, in: RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
                             Button(analyzing ? "Analyzing…" : "Get AI analysis") { analyze() }
                                 .buttonStyle(PrimaryHistoryButton())
-                                .disabled(analyzing || (!claude.keySet && key.isEmpty))
+                                .disabled(analyzing || claude.busy || !consent || (!claude.keySet && key.isEmpty))
+                            if claude.keySet { Button("Remove API key") { claude.removeKey(); consent = false } }
+                            Text("Keys are stored in iOS Keychain.").font(.caption).foregroundStyle(Theme.muted)
                         }
                         if !analysis.isEmpty { Text(analysis).foregroundStyle(Theme.muted).lineSpacing(4) }
                         if let analysisError { Text(analysisError).foregroundStyle(StressLabel.stressed.color).lineSpacing(4) }
@@ -94,7 +108,9 @@ struct SessionDetailView: View {
     }
 
     private func analyze() {
+        guard consent, !analyzing, !claude.busy else { return }
         if !key.isEmpty { claude.apiKey = key; key = "" }
+        claude.analysisConsent = consent
         analyzing = true; analysis = ""; analysisError = nil
         Task {
             do { analysis = try await claude.analyzeSession(points: session.stressPoints, average: session.avgStress) }

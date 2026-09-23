@@ -9,14 +9,18 @@ struct SpotifyTrack: Identifiable, Equatable {
     let name: String
     let artist: String
     let durationMs: Int
+    var artists: [String] = []
+    var imageURL: URL? = nil
+    var externalURL: URL { URL(string: "https://open.spotify.com/track/\(id)")! }
 
     static func from(json t: [String: Any]) -> SpotifyTrack? {
         guard let id = t["id"] as? String, let uri = t["uri"] as? String,
-              let name = t["name"] as? String else { return nil }
+              let name = t["name"] as? String, t["is_playable"] as? Bool != false else { return nil }
         let artists = (t["artists"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
         return SpotifyTrack(id: id, uri: uri, name: name,
                             artist: artists.joined(separator: ", "),
-                            durationMs: t["duration_ms"] as? Int ?? 0)
+                            durationMs: t["duration_ms"] as? Int ?? 0, artists: artists,
+                            imageURL: (((t["album"] as? [String: Any])?["images"] as? [[String: Any]])?.first?["url"] as? String).flatMap { URL(string: $0) })
     }
 }
 
@@ -43,6 +47,7 @@ struct PlaylistTrackCandidate {
 /// Spotify via the Web API only — Authorization-Code-with-PKCE sign-in (no client secret
 /// on the device) and playback controlled on the user's own Spotify app through the
 /// Connect endpoints. Premium is required for playback control, matching the spec.
+@MainActor
 final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
 
     // ⚠️ Fill in your Spotify app's Client ID (Dashboard -> app -> Settings) and add
@@ -62,12 +67,19 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
     private var refreshToken: String?
     private var expiry = Date.distantPast
     private var verifier = ""
+    private var generation = 0
+    private var oauthState = ""
+    private let network = URLSession(configuration: .ephemeral)
+    private var pendingPause: Task<Bool, Never>?
     private var authSession: ASWebAuthenticationSession?
 
     override init() {
         super.init()
         let d = UserDefaults.standard
-        refreshToken = d.string(forKey: "sp_refresh")
+        if let legacy = d.string(forKey: "sp_refresh"), SecretStore.write(legacy, for: "sp_refresh") {
+            d.removeObject(forKey: "sp_refresh")
+        }
+        refreshToken = SecretStore.read("sp_refresh")
         if refreshToken != nil {
             Task { try? await refresh() ; await checkPremium() }
         }
@@ -77,12 +89,16 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
 
     func connect() {
         guard !SpotifyService.clientID.isEmpty else { return }
+        pendingPause = nil
         verifier = Self.randomString(64)
+        oauthState = Self.randomString(32)
+        let revision = generation
         let challenge = Self.base64url(SHA256.hash(data: Data(verifier.utf8)))
         var comps = URLComponents(string: "https://accounts.spotify.com/authorize")!
         comps.queryItems = [
             .init(name: "client_id", value: SpotifyService.clientID),
             .init(name: "response_type", value: "code"),
+            .init(name: "state", value: oauthState),
             .init(name: "redirect_uri", value: SpotifyService.redirectURI),
             .init(name: "scope", value: SpotifyService.scopes),
             .init(name: "code_challenge_method", value: "S256"),
@@ -93,7 +109,11 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
             guard let self, let url,
                   let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                       .queryItems?.first(where: { $0.name == "code" })?.value else { return }
-            Task { await self.exchange(code: code) }
+            Task { @MainActor in
+                guard revision == self.generation,
+                      URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "state" })?.value == self.oauthState else { return }
+                await self.exchange(code: code)
+            }
         }
         authSession?.presentationContextProvider = self
         authSession?.prefersEphemeralWebBrowserSession = false
@@ -106,6 +126,7 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
     }
 
     private func exchange(code: String) async {
+        let revision = generation
         var req = URLRequest(url: URL(string: "https://accounts.spotify.com/api/token")!)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -114,33 +135,36 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
             "redirect_uri": SpotifyService.redirectURI,
             "client_id": SpotifyService.clientID, "code_verifier": verifier,
         ])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
+        guard let (data, _) = try? await network.data(for: req),
               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = j["access_token"] as? String else { return }
+        guard revision == generation else { return }
         await MainActor.run {
             self.accessToken = access
             self.refreshToken = j["refresh_token"] as? String
             self.expiry = Date().addingTimeInterval(j["expires_in"] as? Double ?? 3600)
-            UserDefaults.standard.set(self.refreshToken, forKey: "sp_refresh")
+            SecretStore.write(self.refreshToken, for: "sp_refresh")
         }
         await checkPremium()
     }
 
     private func refresh() async throws {
+        let revision = generation
         guard let refreshToken else { return }
         var req = URLRequest(url: URL(string: "https://accounts.spotify.com/api/token")!)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = Self.form(["grant_type": "refresh_token", "refresh_token": refreshToken,
                                   "client_id": SpotifyService.clientID])
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await network.data(for: req)
         guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = j["access_token"] as? String else { return }
+        guard revision == generation else { return }
         await MainActor.run {
             self.accessToken = access
             if let r = j["refresh_token"] as? String {
                 self.refreshToken = r
-                UserDefaults.standard.set(r, forKey: "sp_refresh")
+                SecretStore.write(r, for: "sp_refresh")
             }
             self.expiry = Date().addingTimeInterval(j["expires_in"] as? Double ?? 3600)
         }
@@ -152,15 +176,34 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
     }
 
     func disconnect() {
+        let oldToken = accessToken
+        generation &+= 1
+        authSession?.cancel(); authSession = nil
         accessToken = nil; refreshToken = nil; premium = false; product = nil
+        expiry = .distantPast; verifier = ""; oauthState = ""
+        SecretStore.write(nil, for: "sp_refresh")
         UserDefaults.standard.removeObject(forKey: "sp_refresh")
+        network.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
+        // Captured token is used solely to stop playback, then released.
+        pendingPause = Task {
+            guard let oldToken else { return true }
+            var req = URLRequest(url: URL(string: "https://api.spotify.com/v1/me/player/pause")!)
+            req.httpMethod = "PUT"; req.timeoutInterval = 8
+            req.setValue("Bearer \(oldToken)", forHTTPHeaderField: "Authorization")
+            let connection = URLSession(configuration: .ephemeral)
+            defer { connection.invalidateAndCancel() }
+            guard let (_, response) = try? await connection.data(for: req),
+                  let code = (response as? HTTPURLResponse)?.statusCode else { return false }
+            return (200...299).contains(code) || code == 404
+        }
     }
 
     // MARK: - Web API
 
     private func api(_ method: String, _ path: String, query: [String: String] = [:],
                      body: [String: Any]? = nil) async -> (Int, [String: Any]?) {
-        guard let tok = await token() else { return (401, nil) }
+        let revision = generation
+        guard let tok = await token(), revision == generation else { return (401, nil) }
         var comps = URLComponents(string: "https://api.spotify.com/v1" + path)!
         if !query.isEmpty { comps.queryItems = query.map { .init(name: $0.key, value: $0.value) } }
         var req = URLRequest(url: comps.url!)
@@ -170,7 +213,8 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         }
-        guard let (data, resp) = try? await URLSession.shared.data(for: req) else { return (0, nil) }
+        guard let (data, resp) = try? await network.data(for: req) else { return (0, nil) }
+        guard revision == generation else { return (401, nil) }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         return (code, json)
@@ -216,19 +260,24 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
         return (200...299).contains(code)
     }
 
-    func pause() async { _ = await api("PUT", "/me/player/pause") }
+    @discardableResult func pause() async -> Bool {
+        if let pendingPause { return await pendingPause.value }
+        if accessToken == nil && refreshToken == nil { return true }
+        let (code, _) = await api("PUT", "/me/player/pause")
+        return (200...299).contains(code) || code == 404
+    }
     func resume() async { _ = await api("PUT", "/me/player/play") }
     func seek(ms: Int) async { _ = await api("PUT", "/me/player/seek", query: ["position_ms": String(ms)]) }
 
-    /// (progressMs, durationMs, isPlaying, trackID)
-    func playerState() async -> (Int, Int, Bool, String?)? {
+    /// (progressMs, durationMs, isPlaying, current track)
+    func playerState() async -> (Int, Int, Bool, SpotifyTrack?)? {
         let (code, j) = await api("GET", "/me/player")
         guard code == 200, let j else { return nil }
         let item = j["item"] as? [String: Any]
         return (j["progress_ms"] as? Int ?? 0,
                 item?["duration_ms"] as? Int ?? 0,
                 j["is_playing"] as? Bool ?? false,
-                item?["id"] as? String)
+                item.flatMap(SpotifyTrack.from(json:)))
     }
 
     func searchTrack(_ query: String, limit: Int = 5) async -> [SpotifyTrack] {
@@ -238,9 +287,14 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
         return items.compactMap(SpotifyTrack.from(json:))
     }
 
+    static func matches(artist: String, title: String, track: SpotifyTrack) -> Bool {
+        SpotifyTrackMatcher.matches(artist: artist, title: title, actualTitle: track.name,
+                                    actualArtists: track.artists.isEmpty ? [track.artist] : track.artists)
+    }
+
     func search(artist: String, title: String) async -> SpotifyTrack? {
         for q in ["track:\"\(title)\" artist:\"\(artist)\"", "\(title) \(artist)"] {
-            if let t = await searchTrack(q, limit: 5).first { return t }
+            if let t = await searchTrack(q, limit: 10).first(where: { Self.matches(artist: artist, title: title, track: $0) }) { return t }
         }
         return nil
     }

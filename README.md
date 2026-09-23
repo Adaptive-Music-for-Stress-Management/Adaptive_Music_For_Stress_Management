@@ -11,7 +11,7 @@ It reads your pulse from the **camera + flashlight** or streams live heart data 
 - **Xcode 16 or newer** (the project uses folder-synchronized groups)
 - iOS 17+ iPhone; watchOS 10+ Apple Watch (optional, for the watch input)
 - **Git LFS** for the song library: `git lfs pull` must leave `BPM_folder.zip` at
-  ~105 MB (a 134-byte file is the pointer, and the build will stop with a clear error)
+  ~35 MB (a 134-byte file is the pointer, and the build will stop with a clear error)
 - An Apple ID for code signing (free personal team works; HealthKit is supported)
 
 ## Setup
@@ -48,7 +48,7 @@ For the computer branch, the same values go in the root `.env` file as `SUPABASE
    sign in with a **Premium** account — the app checks and tells you if the account
    isn't Premium).
 5. Your **Anthropic API key** is entered inside the app (Personalize card) and stored
-   only on the device.
+   in device-only iOS Keychain; use **Remove API key** to delete it.
 
 ## The inputs
 
@@ -82,8 +82,10 @@ AdaptiveMusic/               # iPhone app (SwiftUI)
   Sensors/CameraPPGReader…   # camera+torch PPG · WatchLink (HealthKit + WCSession)
   Audio/SunoPlayer.swift     # BPM-bucket engine player with fades + waveform tap
   Audio/InstrumentEngine…    # synthesized piano + drum kit
-  Services/                  # Spotify (PKCE + Web API) · Claude · LRCLIB · orchestration
+  Services/                  # Spotify (PKCE + Web API) · Claude · local karaoke · orchestration
   Views/                     # flow + the four dashboard cards + relief views
 AdaptiveMusicWatch/          # watch companion: HKWorkoutSession streaming
 BPM_folder.zip               # SUNO AI library (Git LFS), bundled at build time
 ```
+
+See [integration changes and verification notes](INTEGRATION_CHANGES.md) for consent, request limits, Spotify data deletion and replacement audio licensing notes.

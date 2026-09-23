@@ -5,6 +5,16 @@ import AVFoundation
 /// all synthesized into PCM buffers at init (no samples needed) and fired
 /// through a small pool of player nodes so taps can overlap.
 final class InstrumentEngine {
+    private class WeakInstrument {
+        weak var value: InstrumentEngine?
+        init(_ value: InstrumentEngine) { self.value = value }
+    }
+    private static var instances: [WeakInstrument] = []
+    static var spotifyOwnsAudio = false
+    static func stopAllInstruments() {
+        instances = instances.filter { $0.value != nil }
+        for entry in instances { entry.value?.pool.forEach { $0.stop() } }
+    }
 
     enum Drum: String, CaseIterable, Identifiable {
         case kick = "Kick", hihat = "Hi-hat", snare = "Snare"
@@ -35,12 +45,14 @@ final class InstrumentEngine {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
         try? engine.start()
+        Self.instances.append(WeakInstrument(self))
     }
 
     func playNote(midi: Int)   { fire(noteBuffers[midi]) }
     func playDrum(_ drum: Drum){ fire(drumBuffers[drum]) }
 
     private func fire(_ buffer: AVAudioPCMBuffer?) {
+        guard !Self.spotifyOwnsAudio else { return }
         guard let buffer else { return }
         if !engine.isRunning { try? engine.start() }
         let node = pool[poolIndex]; poolIndex = (poolIndex + 1) % pool.count

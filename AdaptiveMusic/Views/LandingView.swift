@@ -141,11 +141,11 @@ private struct LandingPlayCard: View {
     @State private var index = 0
     var body: some View {
         FeatureCard(number: "04", title: "Play/sing along",
-                    detail: "Play piano or drums, or sing with synchronized karaoke lyrics while the song continues.") {
+                    detail: "Play piano or drums with local audio, or open karaoke to play the included recording with its full transcript.") {
             CarouselShell(index: $index, count: 3) {
                 if index == 0 { demoPiano }
                 else if index == 1 { demoDrums }
-                else { VStack { Text("KARAOKE").font(.caption.monospaced()).foregroundStyle(Theme.muted); Text("follow the feeling").foregroundStyle(Theme.faint); Text("sing into the calm").font(.headline); Text("one line at a time").foregroundStyle(Theme.faint) }.lineSpacing(8) }
+                else { VStack { Text("KARAOKE").font(.caption.monospaced()).foregroundStyle(Theme.muted); Text("follow the feeling").foregroundStyle(Theme.faint); Text("sing into the calm").font(.headline); Text("full lyrics, no timing").foregroundStyle(Theme.faint) }.lineSpacing(8) }
             }
         }
     }
