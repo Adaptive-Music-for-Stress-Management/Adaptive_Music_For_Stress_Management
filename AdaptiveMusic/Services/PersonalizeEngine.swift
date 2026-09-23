@@ -197,7 +197,11 @@ final class PersonalizeEngine: ObservableObject {
         guard await takeAudio(.spotify) else { return }
         let handoff = audioHandoffID
         if deviceID == nil { deviceID = await spotify.activeDeviceID() }
-        guard handoff == audioHandoffID, deviceID != nil else { return }
+        guard handoff == audioHandoffID else { return }
+        guard deviceID != nil else {
+            message = "Open Spotify once, then try playback again."
+            return
+        }
         // Metadata and artwork are visible before playback begins.
         currentTrack = track
         let ok = await spotify.play(uri: track.uri, deviceID: deviceID)
