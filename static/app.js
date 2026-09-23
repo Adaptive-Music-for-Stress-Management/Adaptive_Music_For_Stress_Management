@@ -938,7 +938,6 @@ async function enterKaraoke() {
   const msg = $("karaokeMsg"); msg.hidden = false;
   karaokeFetching = true;
   const revision = ++karaokeGeneration;
-  $("karaokeChoose").disabled = true;
   msg.textContent = "Loading karaoke…";
   try {
     const response = await fetch("/api/karaoke");
@@ -948,20 +947,27 @@ async function enterKaraoke() {
     if (!await claimAudio("karaoke")) throw new Error("Pause Spotify before starting karaoke.");
     if (revision !== karaokeGeneration || !karaokeActive) return;
     const song = result.song;
-    const heading = document.createElement("h3");
-    heading.textContent = song.title + " — " + song.author;
+    $("sunoName").textContent = song.title;
+    $("sunoBucket").textContent = "KARAOKE";
     const lyrics = document.createElement("div");
-    lyrics.className = "static-lyrics"; lyrics.textContent = song.lyrics;
-    $("lyricsBox").replaceChildren(heading, lyrics); $("lyricsBox").hidden = false;
+    lyrics.className = "static-lyrics";
+    const lines = song.lyrics.split(/\\r?\\n/);
+    lines.forEach((line, index) => {
+      const row = document.createElement("div");
+      row.className = "lyric-line plain";
+      row.style.animationDelay = (index * 45) + "ms";
+      row.textContent = line || "\\u00a0";
+      lyrics.appendChild(row);
+    });
+    $("lyricsBox").replaceChildren(lyrics); $("lyricsBox").hidden = false;
     $("karaokeAudio").src = "/karaoke/" + encodeURIComponent(song.audio);
     await $("karaokeAudio").play();
     if (revision !== karaokeGeneration || !karaokeActive) { $("karaokeAudio").pause(); return; }
-    msg.textContent = "Full supplied transcript · not synchronized to playback";
+    msg.textContent = ""; msg.hidden = true;
   } catch (error) {
     if (revision === karaokeGeneration) msg.textContent = "Could not start karaoke. Pause Spotify if needed, then press Restart karaoke.";
-  } finally { karaokeFetching = false; $("karaokeChoose").disabled = false; }
+  } finally { karaokeFetching = false; }
 }
-$("karaokeChoose").addEventListener("click", enterKaraoke);
 $("karaokeAudio").addEventListener("play", () => {
   if (audioSource !== "karaoke" || !karaokeActive) $("karaokeAudio").pause();
 });

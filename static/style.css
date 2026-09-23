@@ -289,5 +289,5 @@ input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.25)}
 .karaoke-controls label { font-size:12px; line-height:1.5; }
 .karaoke-controls audio { width:100%; }
 .karaoke-title { color:var(--ink); font-size:16px; font-weight:600; }
-.static-lyrics { white-space:pre-wrap; color:var(--ink); line-height:1.8; font-size:16px; padding:18px 0; text-align:left; }
+.static-lyrics { color:var(--ink); line-height:1.8; font-size:16px; padding:18px 0; text-align:left; }\n.static-lyrics .lyric-line { opacity:0; animation:lyricReveal .55s ease-out forwards; }\n@keyframes lyricReveal { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:translateY(0); } }
 button:disabled { opacity:0.5; cursor:wait; }
