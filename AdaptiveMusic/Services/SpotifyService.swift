@@ -233,7 +233,7 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
 
     /// The device_id of this user's active Spotify app (waking the iPhone app if needed).
     func activeDeviceID() async -> String? {
-        for attempt in 0..<2 {
+        for attempt in 0..<4 {
             let (_, j) = await api("GET", "/me/player/devices")
             let devices = j?["devices"] as? [[String: Any]] ?? []
             // prefer an active device, then this phone, then anything
@@ -246,18 +246,34 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
                         UIApplication.shared.open(url)
                     }
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+            } else {
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
         return nil
     }
 
     func play(uri: String, deviceID: String?, positionMs: Int = 0) async -> Bool {
-        var q: [String: String] = [:]
-        if let deviceID { q["device_id"] = deviceID }
         let body: [String: Any] = ["uris": [uri], "position_ms": max(0, positionMs)]
-        let (code, _) = await api("PUT", "/me/player/play", query: q, body: body)
-        return (200...299).contains(code)
+        var target = deviceID
+        for attempt in 0..<3 {
+            if target == nil { target = await activeDeviceID() }
+            var query: [String: String] = [:]
+            if let target { query["device_id"] = target }
+            let (code, _) = await api("PUT", "/me/player/play", query: query, body: body)
+            if (200...299).contains(code) { return true }
+            // 401 can be a stale access token; api() will obtain a fresh token
+            // on the next call when the cached token is invalidated.
+            if code == 401 { accessToken = nil }
+            if [401, 404, 429, 502, 503].contains(code), attempt < 2 {
+                if code != 429 { target = nil } // refresh the Connect device
+                try? await Task.sleep(nanoseconds: UInt64(450_000_000 * (attempt + 1)))
+                continue
+            }
+            return false
+        }
+        return false
     }
 
     @discardableResult func pause() async -> Bool {
@@ -295,6 +311,20 @@ final class SpotifyService: NSObject, ObservableObject, ASWebAuthenticationPrese
     func search(artist: String, title: String) async -> SpotifyTrack? {
         for q in ["track:\"\(title)\" artist:\"\(artist)\"", "\(title) \(artist)"] {
             if let t = await searchTrack(q, limit: 10).first(where: { Self.matches(artist: artist, title: title, track: $0) }) { return t }
+        }
+        return nil
+    }
+
+    /// Direct artist fallback for names Claude may not recognize. The user's
+    /// typed text is sent only to Spotify search; deterministic normalization
+    /// still requires an exact artist credit before a track is returned.
+    func searchArtistTrack(artist: String) async -> SpotifyTrack? {
+        for query in ["artist:\"\(artist)\"", artist] {
+            let tracks = await searchTrack(query, limit: 20)
+            if let match = tracks.first(where: { track in
+                let credits = track.artists.isEmpty ? [track.artist] : track.artists
+                return credits.contains { SpotifyTrackMatcher.artistKey($0) == SpotifyTrackMatcher.artistKey(artist) }
+            }) { return match }
         }
         return nil
     }

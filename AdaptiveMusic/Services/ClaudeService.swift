@@ -104,7 +104,10 @@ final class ClaudeService: ObservableObject {
     func pickSongs(mode: PersonalizeMode, value: String, label: StressLabel, score: Double?) async throws -> [Suggestion] {
         var payload = context(label: label, score: score)
         payload["preferences"] = ["type": mode.rawValue, "text": String(value.prefix(500))]
-        let reply = try await complete(payload, instruction: "Suggest up to six distinct real songs. For artist preferences use that artist only; for song preferences identify the artist independently. Return [{\"title\":\"song\",\"artist\":\"primary artist\"}].")
+        let artistRule = mode == .artist
+            ? "For this artist preference, use only the exact artist typed by the user (\"\(String(value.prefix(200)))\") and copy that artist name into every candidate; never substitute a related, cover, tribute, or similarly named artist. "
+            : ""
+        let reply = try await complete(payload, instruction: "Suggest up to six distinct real songs. \(artistRule)For song preferences identify the artist independently. Return [{\"title\":\"song\",\"artist\":\"primary artist\"}].")
         guard let suggestions = try? JSONDecoder().decode([Suggestion].self, from: jsonData(reply)) else { throw ClaudeError.badResponse }
         let result = suggestions.prefix(6).filter { !$0.title.isEmpty && !$0.artist.isEmpty && $0.title.count <= 200 && $0.artist.count <= 200 }
         guard !result.isEmpty else { throw ClaudeError.badResponse }

@@ -160,13 +160,29 @@ final class PersonalizeEngine: ObservableObject {
                     chosen = await spotify.playlistTrack(playlistID: playlist.id, at: playlistIndex)
                 }
             } else {
-                let suggestions = try await claude.pickSongs(mode: mode, value: value,
+                var suggestions: [ClaudeService.Suggestion] = []
+                do {
+                    suggestions = try await claude.pickSongs(mode: mode, value: value,
                                                              label: stressLabel, score: hub.stress)
+                } catch {
+                    // Keep artist requests useful even when Claude returns an
+                    // invalid/unknown artist response; Spotify remains the
+                    // deterministic source of truth for the artist credit.
+                    if mode != .artist { throw error }
+                }
                 guard revision == generation else { return }
                 for suggestion in suggestions {
                     guard let track = await spotify.search(artist: suggestion.artist, title: suggestion.title) else { continue }
                     guard revision == generation else { return }
                     if !history.contains(track.uri) { chosen = track; break }
+                }
+                // If Claude cannot name a song for an uncommon or stylized
+                // artist, search Spotify with the original typed artist and
+                // keep the same deterministic artist-credit check.
+                if chosen == nil, mode == .artist {
+                    let fallback = await spotify.searchArtistTrack(artist: typedPreference)
+                    guard revision == generation else { return }
+                    if let fallback, !history.contains(fallback.uri) { chosen = fallback }
                 }
             }
             guard revision == generation else { return }
