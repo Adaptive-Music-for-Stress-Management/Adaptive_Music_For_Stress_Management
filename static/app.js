@@ -119,7 +119,7 @@ async function adaptSpotifyToStress(s) {
     return;
   }
   if (label === stressLabelSeen) return;
-  if (Date.now() - lastAutomaticRequest < 60000) return;
+  if (Date.now() - lastAutomaticRequest < 10000) return;
   if (stressAdaptInFlight || !spMode || !spTrack || audioSource !== "spotify") return;
   if (preferenceRequestBusy) return;
   stressLabelSeen = label;

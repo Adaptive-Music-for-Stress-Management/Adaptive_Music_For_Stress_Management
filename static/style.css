@@ -121,9 +121,7 @@ main{flex:1;display:grid;grid-template-columns:25% 1fr 30%;gap:12px;padding:12px
 .spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--line);
       border-top-color:var(--accent);animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.lyrics{flex:1;overflow-y:auto;scroll-behavior:smooth;padding:36% 6px;text-align:center;
-        mask-image:linear-gradient(180deg,transparent 0,#000 18%,#000 82%,transparent 100%);
-        -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 18%,#000 82%,transparent 100%)}
+.lyrics{flex:0 1 auto;max-height:360px;overflow-y:auto;scroll-behavior:smooth;padding:18px 6px;text-align:center}
 .lyrics::-webkit-scrollbar{width:0}
 .lyric-line{font-size:16px;font-weight:600;color:var(--faint);padding:7px 2px;line-height:1.4;
             transition:color .3s ease, transform .3s ease}
@@ -290,5 +288,6 @@ input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.25)}
 .karaoke-controls { display:grid; gap:12px; padding-bottom:16px; }
 .karaoke-controls label { font-size:12px; line-height:1.5; }
 .karaoke-controls audio { width:100%; }
-.static-lyrics { white-space:pre-wrap; color:var(--ink, #eee); line-height:1.8; font-size:16px; padding:18px 0; }
+.karaoke-title { color:var(--ink); font-size:16px; font-weight:600; }
+.static-lyrics { white-space:pre-wrap; color:var(--ink); line-height:1.8; font-size:16px; padding:18px 0; text-align:left; }
 button:disabled { opacity:0.5; cursor:wait; }

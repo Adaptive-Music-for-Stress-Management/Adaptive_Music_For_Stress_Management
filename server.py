@@ -793,7 +793,7 @@ async def _limited_work(sid, s, work, automatic=False):
     now = time.time()
     with SESS_LOCK:
         s["calls"] = [t for t in s["calls"] if now - t < 60]
-        if s["busy"] or len(s["calls"]) >= 8 or (s["calls"] and now - s["calls"][-1] < 5) or (automatic and now - s["last_auto"] < 60):
+        if s["busy"] or len(s["calls"]) >= 8 or (s["calls"] and now - s["calls"][-1] < 5) or (automatic and now - s["last_auto"] < 10):
             return _with_cookie(JSONResponse({"ok": False, "error": "Please wait before requesting another song or analysis."}, status_code=429), sid)
         s["busy"] = True
         s["calls"].append(now)

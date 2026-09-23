@@ -217,7 +217,7 @@
 
           <div class="rs-view" id="rsKaraoke" hidden>
             <div class="karaoke-controls">
-<p class="privacy-note">Opening karaoke replaces the current music with Ransom — Jade Key (ft. Mary Sweet). The supplied transcript is shown in full, without timing. No AI request is made.</p>
+<div class="karaoke-title">Ransom — Jade Key (ft. Mary Sweet)</div>
 <button class="btn" id="karaokeChoose">Restart karaoke</button>
 <audio id="karaokeAudio" controls preload="none"></audio>
 </div><div class="rs-msg" id="karaokeMsg" hidden></div>
@@ -281,8 +281,8 @@
         <div class="divider"></div>
 
         <!-- Spotify + Claude personalization -->
-        <p class="privacy-note">Your Anthropic key is sent to this server and kept in memory for up to 30 minutes. It is cleared when you remove it, end a session or sign out. API calls are billed to your account. Preferences and stress scores are sent to Anthropic; Spotify results are not. Automatic changes are limited to once per minute.</p>
-<div class="account-actions"><button class="btn" id="antRemove">Remove API key</button><button class="btn" id="spDisconnect">Disconnect Spotify</button><a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">Manage Spotify permissions</a><a href="/static/privacy.html">Privacy details</a></div>
+
+<div class="account-actions"><button class="btn" id="antRemove">Remove API key</button><button class="btn" id="spDisconnect">Disconnect Spotify</button><a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener">Manage Spotify permissions</a><a href="/static/privacy.html">Privacy Details and AI usage</a></div>
 <div id="spSetup">
           <div class="setup-row" id="keyRow">
             <input type="password" id="antKey" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off"/>

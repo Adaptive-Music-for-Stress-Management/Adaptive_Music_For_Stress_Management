@@ -20,7 +20,7 @@ Deployment: copy .env.example to .env on computer, set ADAPTUNE_ENV=production, 
 
 Before optional session analysis, the user explicitly permits sending relative timestamps, stress scores and the recomputed average. Emails, account IDs and absolute dates are excluded. Responses are validated and labeled AI-generated wellness information that may be inaccurate, not diagnosis. Preferences/score transmission and API-account billing are disclosed next to personalization.
 
-One in-flight AI request, at least five seconds between requests, at most eight per minute, and automatic stress adaptations at most once per minute. No automatic Anthropic SDK retries. Validation and cooldowns also run server-side/on-device, not just on buttons.
+One in-flight AI request, at least five seconds between requests, at most eight per minute, and automatic stress adaptations at most once every 10 seconds. No automatic Anthropic SDK retries. Validation and cooldowns also run server-side/on-device, not just on buttons.
 
 ## Replacement music and karaoke
 
